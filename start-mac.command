@@ -59,9 +59,12 @@ cleanup() {
     [[ -n "$OLLAMA_PID" ]] && kill "$OLLAMA_PID" 2>/dev/null || true
     [[ -n "$ANYTHINGLLM_PID" ]] && wait "$ANYTHINGLLM_PID" 2>/dev/null || true
     [[ -n "$OLLAMA_PID" ]] && wait "$OLLAMA_PID" 2>/dev/null || true
-    # Kill by path to avoid hitting a host Ollama (xargs -r avoids running kill with no input)
+    # Kill by path to avoid hitting a host Ollama (safe for BSD xargs)
     if command -v pgrep &>/dev/null; then
-        pgrep -f "$MAC_OLLAMA_DIR" 2>/dev/null | xargs -r kill -9 2>/dev/null || true
+        pids=$(pgrep -f "$MAC_OLLAMA_DIR" 2>/dev/null || true)
+        if [[ -n "$pids" ]]; then
+            echo "$pids" | xargs kill -9 2>/dev/null || true
+        fi
     fi
     echo -e "${GREEN}[EXITO]${NC} AI shut down. You may safely eject the USB."
 }
@@ -119,8 +122,15 @@ if [ ! -d "$USB_DIR/anythingllm_mac/AnythingLLM.app" ]; then
     echo -e "${DGRAY}→ NO installation on the Mac! Everything stays on the drive.${NC}"
     mkdir -p "$USB_DIR/anythingllm_mac"
     
-    echo -e "${DGRAY}→ Fetching Silicon-optimized DMG from AnythingLLM CDN...${NC}"
-    ANYTHINGLLM_MAC_URL_EFFECTIVE="${ANYTHINGLLM_MAC_URL:-https://cdn.anythingllm.com/latest/AnythingLLMDesktop-Silicon.dmg}"
+    ARCH=$(uname -m 2>/dev/null || echo "arm64")
+    DEFAULT_DMG_URL="https://cdn.anythingllm.com/latest/AnythingLLMDesktop-Silicon.dmg"
+    if [[ "$ARCH" == "x86_64" ]]; then
+        echo -e "${DGRAY}→ Intel Mac detected (${ARCH}). Using x86_64 DMG...${NC}"
+        DEFAULT_DMG_URL="https://cdn.anythingllm.com/latest/AnythingLLMDesktop.dmg"
+    else
+        echo -e "${DGRAY}→ Apple Silicon detected (${ARCH}). Using Silicon DMG...${NC}"
+    fi
+    ANYTHINGLLM_MAC_URL_EFFECTIVE="${ANYTHINGLLM_MAC_URL:-$DEFAULT_DMG_URL}"
     curl -fL --progress-bar --retry 2 --retry-delay 5 \
         "$ANYTHINGLLM_MAC_URL_EFFECTIVE" \
         -o "$USB_DIR/anythingllm_mac/AnythingLLM_Installer.dmg"
@@ -202,19 +212,21 @@ echo ""
 echo -e "${DGRAY}[STEP 4/7]${NC} Validating AnythingLLM configuration..."
 DEFAULT_MODEL="nemomix-local"
 if [ -f "$MODELS_DIR/installed-models.txt" ]; then
-    DEFAULT_MODEL=$(head -n 1 "$MODELS_DIR/installed-models.txt" | cut -d '|' -f 1)
+    DEFAULT_MODEL=$(head -n 1 "$MODELS_DIR/installed-models.txt" | cut -d '|' -f 1 | tr -d '\r\n ')
     # Migrate legacy alias
     if [[ "$DEFAULT_MODEL" == "nemomix-local_X" ]]; then DEFAULT_MODEL="nemomix-local"; fi
 fi
 
 ENV_FILE="$STORAGE_DIR/storage/.env"
+if [ -f "$ENV_FILE" ]; then
+    SAVED_MODEL=$(grep -E "^OLLAMA_MODEL_PREF=" "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]\r\n')
+    [ -n "$SAVED_MODEL" ] && DEFAULT_MODEL="$SAVED_MODEL"
+fi
+
 NEEDS_FIX=0
 if [ ! -f "$ENV_FILE" ]; then
     NEEDS_FIX=1
 else
-    if ! grep -q "OLLAMA_BASE_PATH=http://127.0.0.1:$OLLAMA_PORT" "$ENV_FILE" 2>/dev/null; then
-        NEEDS_FIX=1
-    fi
     if grep -q "LLM_PROVIDER=anythingllm_ollama" "$ENV_FILE" 2>/dev/null; then
         NEEDS_FIX=1
     fi
@@ -223,16 +235,16 @@ else
     fi
 fi
 
+TOKEN_LIMIT="4096"
+if [ -f "$ENV_FILE" ]; then
+    EXISTING_LIMIT=$(grep -E "^OLLAMA_MODEL_TOKEN_LIMIT=" "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]\r\n')
+    if [ -n "$EXISTING_LIMIT" ] && [ "$EXISTING_LIMIT" -eq "$EXISTING_LIMIT" ] 2>/dev/null; then
+        TOKEN_LIMIT="$EXISTING_LIMIT"
+    fi
+fi
+
 if [ "$NEEDS_FIX" = "1" ]; then
     echo -e "${YELLOW}[CONFIG]${NC} Updating AnythingLLM to use external Ollama engine..."
-    # Preserve custom token limit if user edited it
-    TOKEN_LIMIT="4096"
-    if [ -f "$ENV_FILE" ]; then
-        EXISTING_LIMIT=$(grep -E "^OLLAMA_MODEL_TOKEN_LIMIT=" "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]')
-        if [ -n "$EXISTING_LIMIT" ] && [ "$EXISTING_LIMIT" -eq "$EXISTING_LIMIT" ] 2>/dev/null; then
-            TOKEN_LIMIT="$EXISTING_LIMIT"
-        fi
-    fi
     cat > "$ENV_FILE" << EOF
 LLM_PROVIDER=ollama
 OLLAMA_BASE_PATH=http://127.0.0.1:$OLLAMA_PORT
@@ -243,7 +255,12 @@ VECTOR_DB=lancedb
 EOF
     echo -e "${GREEN}[✓]${NC} Configured: ${CYAN}$DEFAULT_MODEL${NC} @ port ${CYAN}$OLLAMA_PORT${NC} (token_limit=$TOKEN_LIMIT)"
 else
-    echo -e "${GREEN}[✓]${NC} Configuration already valid"
+    # Patch only the base path to current dynamic port, preserving user model pref and other keys
+    awk -v newpath="OLLAMA_BASE_PATH=http://127.0.0.1:$OLLAMA_PORT" '
+        /^OLLAMA_BASE_PATH=/ { print newpath; next }
+        { print }
+    ' "$ENV_FILE" > "$ENV_FILE.tmp" && mv "$ENV_FILE.tmp" "$ENV_FILE"
+    echo -e "${GREEN}[✓]${NC} Dynamic port updated (model: ${CYAN}$DEFAULT_MODEL${NC})"
 fi
 
 # ═══════════════════════════════════════════════════════════════
@@ -254,6 +271,9 @@ if [ -f "$MODELS_DIR/installed-models.txt" ]; then
     echo -e "${CYAN}📦 Installed Models on USB:${NC}"
     echo -e "${DGRAY}────────────────────────────────────────${NC}"
     while IFS="|" read -r local_name nice_name tag; do
+        local_name="${local_name%$'\r'}"
+        nice_name="${nice_name%$'\r'}"
+        tag="${tag%$'\r'}"
         if [ -n "$nice_name" ]; then
             echo -e "  ${GREEN}•${NC} $nice_name ${DGRAY}[$tag]${NC}"
         fi
@@ -303,6 +323,10 @@ echo ""
 # STEP 7: Launch AnythingLLM
 # ═══════════════════════════════════════════════════════════════
 echo -e "${DGRAY}[STEP 7/7]${NC} Launching AI Interface from USB..."
+
+# Ensure Gatekeeper quarantine attributes are removed on new host Macs
+xattr -rc "$USB_DIR/anythingllm_mac/AnythingLLM.app" 2>/dev/null || true
+xattr -rc "$MAC_OLLAMA_DIR" 2>/dev/null || true
 
 # Wipe ONLY hardware-dependent caches (NOT config.json!)
 ANYTHINGLLM_CACHE="$XDG_CONFIG_HOME/anythingllm-desktop"

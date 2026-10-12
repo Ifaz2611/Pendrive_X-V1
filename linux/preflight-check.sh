@@ -508,6 +508,11 @@ if $MOUNT_IS_READONLY; then
   result_fail "Mount is read-only — remount with write access before installation or benchmarking"
 fi
 
+if [[ ",${MOUNT_OPTS}," == *,noexec,* ]]; then
+  result_warn "Mount has 'noexec' flag — direct execution from USB may be blocked by your system"
+  result_info "If executables fail to run, remount the drive with exec: sudo mount -o remount,exec \"$TARGET_MOUNT\""
+fi
+
 # ================================================================
 # STEP 3 — DISK SPACE CHECK
 # ================================================================
@@ -702,6 +707,33 @@ fi
 
 echo ""
 
+launch_installation() {
+  local PARENT_DIR
+  PARENT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+  local LAUNCH_SCRIPT=""
+  if [[ "$TARGET_MOUNT" != "$SCRIPT_DIR" && "$TARGET_MOUNT" != "$PARENT_DIR" ]]; then
+    echo -e "  ${YELLOW}Deploying setup files to target USB drive...${NC}"
+    mkdir -p "$TARGET_MOUNT/linux"
+    cp "$SCRIPT_DIR"/*.sh "$TARGET_MOUNT/linux/"
+    chmod +x "$TARGET_MOUNT/linux/"*.sh 2>/dev/null || true
+    [[ -f "$PARENT_DIR/versions.env" ]] && cp "$PARENT_DIR/versions.env" "$TARGET_MOUNT/"
+    if [[ -d "$PARENT_DIR/models" ]]; then
+      mkdir -p "$TARGET_MOUNT/models"
+      [[ -f "$PARENT_DIR/models/catalog.json" ]] && cp "$PARENT_DIR/models/catalog.json" "$TARGET_MOUNT/models/"
+    fi
+    LAUNCH_SCRIPT="$TARGET_MOUNT/linux/install-core.sh"
+  elif [[ -f "$TARGET_MOUNT/linux/install-core.sh" ]]; then
+    LAUNCH_SCRIPT="$TARGET_MOUNT/linux/install-core.sh"
+  elif [[ -f "$SCRIPT_DIR/install-core.sh" ]]; then
+    LAUNCH_SCRIPT="$SCRIPT_DIR/install-core.sh"
+  else
+    LAUNCH_SCRIPT="$TARGET_MOUNT/install-core.sh"
+  fi
+  echo -e "  ${GREEN}Launching installer on: ${TARGET_MOUNT}...${NC}"
+  sleep 1
+  bash "$LAUNCH_SCRIPT" "$TARGET_MOUNT"
+}
+
 # ── Decision gate ─────────────────────────────────────────────
 if (( FAIL_COUNT > 0 )); then
   echo -e "${RED}  ✘  REQUIREMENTS NOT MET — Installation blocked.${NC}"
@@ -718,17 +750,7 @@ elif (( WARN_COUNT > 0 )); then
   read -rp "  Proceed to installation anyway? (yes/no): " CONFIRM
   if [[ "${CONFIRM,,}" == "yes" || "${CONFIRM,,}" == "y" ]]; then
     echo ""
-    if [[ "$TARGET_MOUNT" != "$SCRIPT_DIR" ]]; then
-        echo -e "  ${YELLOW}Copying setup scripts to USB drive...${NC}"
-        cp "$SCRIPT_DIR/install.sh" "$TARGET_MOUNT/"
-        cp "$SCRIPT_DIR/install-core.sh" "$TARGET_MOUNT/"
-        cp "$SCRIPT_DIR/preflight-check.sh" "$TARGET_MOUNT/"
-        cp "$SCRIPT_DIR/start-linux.sh" "$TARGET_MOUNT/"
-        chmod +x "$TARGET_MOUNT/"*.sh 2>/dev/null || true
-    fi
-    echo -e "  ${GREEN}Launching installer on: ${TARGET_MOUNT}...${NC}"
-    sleep 1
-    bash "$TARGET_MOUNT/install-core.sh" "$TARGET_MOUNT"
+    launch_installation
   else
     echo ""
     echo -e "  ${YELLOW}Cancelled. Re-run preflight-check.sh when ready.${NC}"
@@ -741,17 +763,7 @@ else
   read -rp "  Proceed to installation? (yes/no): " CONFIRM
   if [[ "${CONFIRM,,}" == "yes" || "${CONFIRM,,}" == "y" ]]; then
     echo ""
-    if [[ "$TARGET_MOUNT" != "$SCRIPT_DIR" ]]; then
-        echo -e "  ${YELLOW}Copying setup scripts to USB drive...${NC}"
-        cp "$SCRIPT_DIR/install.sh" "$TARGET_MOUNT/"
-        cp "$SCRIPT_DIR/install-core.sh" "$TARGET_MOUNT/"
-        cp "$SCRIPT_DIR/preflight-check.sh" "$TARGET_MOUNT/"
-        cp "$SCRIPT_DIR/start-linux.sh" "$TARGET_MOUNT/"
-        chmod +x "$TARGET_MOUNT/"*.sh 2>/dev/null || true
-    fi
-    echo -e "  ${GREEN}Launching installer on: ${TARGET_MOUNT}...${NC}"
-    sleep 1
-    bash "$TARGET_MOUNT/install-core.sh" "$TARGET_MOUNT"
+    launch_installation
   else
     echo ""
     echo -e "  ${DGRAY}No problem — run install-core.sh whenever you're ready.${NC}"

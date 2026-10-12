@@ -27,4 +27,4 @@ done
 echo ""
 echo "Logs:"; ls -lh "$USB_DIR/installer_data/logs" 2>/dev/null || echo " no installer logs"; ls -lh "$USB_DIR/anythingllm_data/logs" 2>/dev/null || echo " no launcher logs"
 echo ""
-if command -v shellcheck &>/dev/null; then echo "shellcheck:"; shellcheck "$USB_DIR/linux/*.sh" "$USB_DIR/start-mac.command" 2>&1 | head -20; fi
+if command -v shellcheck &>/dev/null; then echo "shellcheck:"; shellcheck "$USB_DIR"/linux/*.sh "$USB_DIR/start-mac.command" 2>&1 | head -20; fi

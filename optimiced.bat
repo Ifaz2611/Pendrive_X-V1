@@ -22,7 +22,7 @@ set "TMP=%DATA_DIR%\temp"
 if not exist "%DATA_DIR%\temp" mkdir "%DATA_DIR%\temp" 2>nul
 
 :: FAT32 guard (like preflight-check.sh:484)
-for /f "usebackq tokens=*" %%a in (`powershell -NoProfile -Command "try{$d='%USB_ROOT:~0,1%'; $v=Get-CimInstance -ClassName Win32_LogicalDisk -Filter \"DeviceID='$d:'\" -ErrorAction Stop; $v.FileSystem} catch {''}"`) do set "FS_TYPE=%%a"
+for /f "usebackq tokens=*" %%a in (`powershell -NoProfile -Command "$d='%~d0'; try{$v=Get-CimInstance -ClassName Win32_LogicalDisk -Filter ('DeviceID=''{0}''' -f $d) -ErrorAction Stop; $v.FileSystem} catch {''}"`) do set "FS_TYPE=%%a"
 if /I "%FS_TYPE%"=="FAT32" (
     echo [ERROR] FAT32 no soportado / FAT32 not supported — Reformatea como exFAT ^(Format as exFAT^).
     pause & endlocal & exit /b 1
@@ -41,7 +41,7 @@ echo ===================================================
 :: 2. VERIFICACION DE ESPACIO EN DISCO (Locale-Independent)
 :: ═══════════════════════════════════════════════════════════════
 set "FREE_MB=-1"
-for /f "usebackq tokens=*" %%a in (`powershell -NoProfile -Command "try { $d='%USB_ROOT:~0,1%'; $vol=Get-CimInstance -ClassName Win32_LogicalDisk -Filter \"DeviceID='$d:'\" -ErrorAction Stop; if($vol -and $vol.FreeSpace -ne $null){[math]::Round($vol.FreeSpace/1MB,0)}else{-1} } catch {-1}"`) do set "FREE_MB=%%a"
+for /f "usebackq tokens=*" %%a in (`powershell -NoProfile -Command "$d='%~d0'; try { $vol=Get-CimInstance -ClassName Win32_LogicalDisk -Filter ('DeviceID=''{0}''' -f $d) -ErrorAction Stop; if($vol -and $vol.FreeSpace -ne $null){[math]::Round($vol.FreeSpace/1MB,0)}else{-1} } catch {-1}"`) do set "FREE_MB=%%a"
 if not defined FREE_MB set "FREE_MB=-1"
 
 :: Guard against empty or non-numeric FREE_MB before numeric compare
@@ -109,9 +109,14 @@ if not exist "%OLLAMA_DIR%\ollama.exe" (
     echo [ERROR] No se encuentra ollama.exe en %OLLAMA_DIR%
     pause & exit /b 1
 )
+if not exist "%USB_ROOT%anythingllm\AnythingLLM.exe" (
+    echo [ERROR] No se encuentra AnythingLLM.exe en %USB_ROOT%anythingllm
+    pause & exit /b 1
+)
 
-:: Lanzar via PowerShell para capturar PID de forma fiable
-for /f "usebackq tokens=*" %%p in (`powershell -NoProfile -Command "$proc=Start-Process -FilePath '%OLLAMA_DIR%\ollama.exe' -ArgumentList 'serve' -WindowStyle Hidden -PassThru; $proc.Id"`) do set "OLLAMA_PID=%%p"
+:: Lanzar via PowerShell para capturar PID de forma fiable (con escape de comillas simples)
+set "ESC_OLLAMA_EXE=%OLLAMA_DIR:'=''%\ollama.exe"
+for /f "usebackq tokens=*" %%p in (`powershell -NoProfile -Command "$proc=Start-Process -FilePath '%ESC_OLLAMA_EXE%' -ArgumentList 'serve' -WindowStyle Hidden -PassThru; $proc.Id"`) do set "OLLAMA_PID=%%p"
 
 if not defined OLLAMA_PID (
     echo [ERROR] No se pudo iniciar Ollama o capturar su PID.
@@ -147,16 +152,19 @@ goto :WaitForOllama
 :OllamaReady
 
 :: ═══════════════════════════════════════════════════════════════
-:: 9. CONFIGURAR ANYTHINGLLM (.env — preserve custom token limit if user edited)
+:: 9. CONFIGURAR ANYTHINGLLM (.env — preserve custom model and token limit)
 :: ═══════════════════════════════════════════════════════════════
 if not exist "%DATA_DIR%\storage" mkdir "%DATA_DIR%\storage" 2>nul
 set "ENV_FILE=%DATA_DIR%\storage\.env"
 set "TOKEN_LIMIT=4096"
+set "SAVED_MODEL="
 if exist "%ENV_FILE%" (
     for /f "usebackq tokens=1,2 delims==" %%a in ("%ENV_FILE%") do (
         if /I "%%a"=="OLLAMA_MODEL_TOKEN_LIMIT" set "TOKEN_LIMIT=%%b"
+        if /I "%%a"=="OLLAMA_MODEL_PREF" if not "%%b"=="" set "SAVED_MODEL=%%b"
     )
 )
+if defined SAVED_MODEL set "DEFAULT_MODEL=%SAVED_MODEL%"
 :: Validate token limit is numeric, fallback to 4096
 for /f "delims=0123456789" %%x in ("%TOKEN_LIMIT%") do set "TOKEN_LIMIT=4096"
 
@@ -174,15 +182,10 @@ echo [+] AnythingLLM configurado: %DEFAULT_MODEL% @ %OLLAMA_HOST% (token_limit=%
 :: ═══════════════════════════════════════════════════════════════
 :: 10. LANZAR ANYTHINGLLM (Modo Privacidad Maxima)
 :: ═══════════════════════════════════════════════════════════════
-if not exist "%USB_ROOT%anythingllm\AnythingLLM.exe" (
-    echo [ERROR] No se encuentra AnythingLLM.exe
-    pause & exit /b 1
-)
-
 echo [+] Lanzando interfaz con proteccion de datos...
 pushd "%USB_ROOT%anythingllm"
 
-set "LLM_ARGS=--user-data-dir=%DATA_DIR% --no-sandbox --disable-gpu-shader-disk-cache --disable-software-rasterizer --disable-dev-shm-usage --disable-metrics --disable-breakpad"
+set "LLM_ARGS=--user-data-dir="%DATA_DIR%" --no-sandbox --disable-gpu-shader-disk-cache --disable-software-rasterizer --disable-dev-shm-usage --disable-metrics --disable-breakpad"
 start "" /Abovenormal "AnythingLLM.exe" %LLM_ARGS%
 
 popd
@@ -230,12 +233,13 @@ if defined OLLAMA_PID (
 )
 
 :: Fallback extremo pero SEGURO: solo si el exe esta en NUESTRA ruta USB
-for /f "usebackq tokens=*" %%p in (`powershell -NoProfile -Command "Get-Process ollama -ErrorAction SilentlyContinue | Where-Object {$_.Path -eq '%OLLAMA_DIR%\ollama.exe'} | Select-Object -ExpandProperty Id -First 1"`) do (
+for /f "usebackq tokens=*" %%p in (`powershell -NoProfile -Command "Get-Process ollama -ErrorAction SilentlyContinue | Where-Object {$_.Path -eq '%ESC_OLLAMA_EXE%'} | Select-Object -ExpandProperty Id -First 1"`) do (
     if not "%%p"=="" taskkill /PID %%p /F /T >nul 2>&1
 )
 
 :: Sincronizacion forzada de cache de escritura
-powershell -NoProfile -Command "[System.IO.File]::Create('%DATA_DIR%\sync.tmp').Dispose(); Remove-Item '%DATA_DIR%\sync.tmp' -ErrorAction SilentlyContinue" >nul 2>&1
+set "ESC_DATA_DIR=%DATA_DIR:'=''%"
+powershell -NoProfile -Command "[System.IO.File]::Create('%ESC_DATA_DIR%\sync.tmp').Dispose(); Remove-Item '%ESC_DATA_DIR%\sync.tmp' -ErrorAction SilentlyContinue" >nul 2>&1
 ipconfig /flushdns >nul
 
 :: Limpiar archivo de sesion

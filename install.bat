@@ -42,24 +42,22 @@ timeout /t 2 /nobreak >nul
 :: /nobreak prevents the user from skipping the wait, and >nul hides the countdown timer.
 
 powershell -ExecutionPolicy Bypass -File "%~dp0install-core.ps1"
-:: Execute the core PowerShell installation script.
-:: -ExecutionPolicy Bypass allows the script to run without changing system-wide security settings.
-:: "%~dp0" dynamically resolves to the drive letter and folder path where this batch file is located.
+set "EXIT_CODE=%ERRORLEVEL%"
 
-echo.
-echo ========================================================
-echo           SETUP COMPLETED SUCCESSFULLY!
-echo ========================================================
-echo.
-echo Your AI is ready!
-echo.
-echo Run "start-windows.bat" to start.
-echo.
-echo ========================================================
-:: Display the final success banner and provide instructions on how to launch the AI
-
-pause
-:: Halt execution one last time so the user can read the completion message before the window closes
+if %EXIT_CODE% neq 0 (
+    echo.
+    echo ========================================================
+    echo           SETUP INCOMPLETE OR ENCOUNTERED ERRORS
+    echo ========================================================
+    echo.
+    echo Setup exited with code %EXIT_CODE%.
+    echo Check the error messages above or in installer_data\logs\
+    echo You can re-run install.bat to retry failed downloads.
+    echo.
+    echo ========================================================
+    pause
+    exit /b %EXIT_CODE%
+)
 
 @REM Signing OFF IMF [Ethen Hunt] Code name ["Bravo Echo 11"]
 :: Original author signature/comment

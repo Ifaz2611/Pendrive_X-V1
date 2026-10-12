@@ -11,10 +11,14 @@ MAGENTA='\033[0;35m'
 DGRAY='\033[0;90m'
 NC='\033[0m'
 
-USB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-# Allow USB_DIR override: bash start-linux.sh /path/to/usb
-if [[ -n "${1:-}" && -d "$1" ]]; then USB_DIR="$(cd "$1" && pwd)"; fi
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -n "${1:-}" && -d "$1" ]]; then
+    USB_DIR="$(cd "$1" && pwd)"
+elif [[ -f "$SCRIPT_DIR/../versions.env" || -f "$SCRIPT_DIR/../install.bat" ]]; then
+    USB_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+else
+    USB_DIR="$SCRIPT_DIR"
+fi
 
 # ── Logging
 LOG_DIR="$USB_DIR/anythingllm_data/logs"
@@ -70,15 +74,17 @@ mkdir -p \
 OLLAMA_BIN="$USB_DIR/ollama/ollama"
 APPIMAGE="$USB_DIR/anythingllm/AnythingLLM.AppImage"
 
-# ── Find a free port for Ollama (portable: nc -> lsof -> python3, not /dev/tcp)
+# ── Find a free port for Ollama (portable: nc -> lsof -> python3 -> /dev/tcp)
 is_port_free() {
     local p="$1"
     if command -v nc &>/dev/null; then
         ! nc -z 127.0.0.1 "$p" 2>/dev/null
     elif command -v lsof &>/dev/null; then
         ! lsof -iTCP:"$p" -sTCP:LISTEN -P -n 2>/dev/null | grep -q LISTEN
-    else
+    elif command -v python3 &>/dev/null; then
         python3 -c "import socket; s=socket.socket(); s.settimeout(1); exit(0 if s.connect_ex(('127.0.0.1', $p))!=0 else 1)" 2>/dev/null
+    else
+        (exec 3<>/dev/tcp/127.0.0.1/"$p") 2>/dev/null && { exec 3<&- 3>&-; return 1; } || return 0
     fi
 }
 find_free_port() {
@@ -94,16 +100,22 @@ export OLLAMA_HOST
 
 echo -e "${DGRAY}  Using Ollama port: ${OLLAMA_PORT}${NC}"
 
-# ── Read default model ────────────────────────────────────────
+# ── Read default model and preserve UI selection ──────────────
 DEFAULT_MODEL="nemomix-local"
 MODELS_FILE="$USB_DIR/models/installed-models.txt"
 if [[ -f "$MODELS_FILE" ]]; then
-    FIRST_LINE=$(head -1 "$MODELS_FILE")
+    FIRST_LINE=$(head -1 "$MODELS_FILE" | tr -d '\r')
     DEFAULT_MODEL="${FIRST_LINE%%|*}"
+fi
+[[ "$DEFAULT_MODEL" == "nemomix-local_X" ]] && DEFAULT_MODEL="nemomix-local"
+
+ENV_FILE="$STORAGE_DIR/storage/.env"
+if [[ -f "$ENV_FILE" ]]; then
+    SAVED_MODEL=$(grep -E "^OLLAMA_MODEL_PREF=" "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]\r')
+    [[ -n "$SAVED_MODEL" ]] && DEFAULT_MODEL="$SAVED_MODEL"
 fi
 
 # ── Configure .env — preserve custom token limit, patch port dynamically
-ENV_FILE="$STORAGE_DIR/storage/.env"
 needs_fix=false
 
 [[ ! -f "$ENV_FILE" ]] && needs_fix=true
@@ -146,6 +158,9 @@ if [[ -f "$MODELS_FILE" ]]; then
     echo ""
     echo "Installed models:"
     while IFS='|' read -r local_name display_name label _; do
+        local_name="${local_name%$'\r'}"
+        display_name="${display_name%$'\r'}"
+        label="${label%$'\r'}"
         tag=""
         [[ "$label" == "UNCENSORED" ]] && tag="${RED}[UNCENSORED]${NC}"
         [[ "$label" == "CUSTOM" ]] && tag="${GREEN}[CUSTOM]${NC}"

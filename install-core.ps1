@@ -1,4 +1,4 @@
-# ================================================================
+﻿# ================================================================
 # Pendrive_X AI - AUTOMATED USB SETUP SCRIPT (Windows)
 # ================================================================
 # Multi-Model Edition: Choose one or more AI models to install!
@@ -182,6 +182,35 @@ $ModelCatalog = @(
     }
 )
 
+# Load from models/catalog.json if present (single source of truth)
+$catalogFile = Join-Path $USB_Drive "models\catalog.json"
+if (Test-Path $catalogFile) {
+    try {
+        $jsonCatalog = Get-Content $catalogFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($jsonCatalog.models -and $jsonCatalog.models.Count -gt 0) {
+            $parsedCatalog = @()
+            foreach ($m in $jsonCatalog.models) {
+                $parsedCatalog += @{
+                    Num      = [int]$m.num
+                    Name     = [string]$m.name
+                    File     = [string]$m.file
+                    URL      = [string]$m.url
+                    Size     = [string]$m.size_gb
+                    MinBytes = [long]$m.min_bytes
+                    Local    = [string]$m.local
+                    Label    = [string]$m.label
+                    Badge    = [string]$m.badge
+                    Prompt   = [string]$m.prompt
+                    SHA256   = [string]$m.sha256
+                }
+            }
+            if ($parsedCatalog.Count -gt 0) {
+                $ModelCatalog = $parsedCatalog
+            }
+        }
+    } catch {}
+}
+
 # -----------------------------------------------------------------
 # HELPER: FAT32 guard — abort if USB cannot hold >4GB files
 # -----------------------------------------------------------------
@@ -192,13 +221,14 @@ function Test-FilesystemSupport {
         # Get the drive letter of the USB drive.
         $driveLetter = (Get-Item $USB_Drive).PSDrive.Name
         # Query WMI for the logical disk information.
-        $vol = Get-CimInstance -ClassName Win32_LogicalDisk -Filter "DeviceID='$driveLetter`:'" -ErrorAction Stop
+        $diskFilter = "DeviceID='{0}:'" -f $driveLetter
+        $vol = Get-CimInstance -ClassName Win32_LogicalDisk -Filter $diskFilter -ErrorAction Stop
         # Check if the file system is FAT32 or FAT16.
         if ($vol -and $vol.FileSystem -match 'FAT32|FAT16') {
             Write-Host ""
             Write-Host "  ERROR: FAT32 filesystem detected — 4 GB per-file limit will block GGUF models!" -ForegroundColor Red
             Write-Host "  Reformat USB as exFAT or NTFS: Right-click drive -> Format -> exFAT" -ForegroundColor Yellow
-            Write-Host "  Current FS: $($vol.FileSystem) on $driveLetter`:" -ForegroundColor DarkGray
+            Write-Host "  Current FS: $($vol.FileSystem) on $($driveLetter):" -ForegroundColor DarkGray
             try { Stop-Transcript | Out-Null } catch {}
             exit 1 # Abort the script
         }
@@ -317,7 +347,7 @@ function Invoke-SafeDownload {
         }
         if (Test-Path $tmp) {
             $actualMB = [math]::Round((Get-Item $tmp).Length / 1MB, 2)
-            Write-Host "      File seems too small (${actualMB}MB). May be incomplete." -ForegroundColor Red
+            Write-Host "      File seems too small ($actualMB MB). May be incomplete." -ForegroundColor Red
         }
         # On failure, keep .part for resume next attempt; only remove if size 0
         # Clean up the temp file only if it's completely empty (0 bytes); otherwise keep it for the next resume attempt.
@@ -603,7 +633,7 @@ if ($SelectedModels.Count -ge 3 -or $UserChoice.Trim().ToLower() -eq "all") {
             Write-Host "  Cancelled. Run the installer again to choose fewer models." -ForegroundColor Yellow
             Write-Host ""
             Pause-AnyKey
-            exit
+            exit 1
         }
     }
 }
@@ -697,7 +727,7 @@ foreach ($m in $SelectedModels) {
 FROM ./$($m.File)
 PARAMETER temperature 0.7
 PARAMETER top_p 0.9
-SYSTEM $($m.Prompt)
+SYSTEM """$($m.Prompt)"""
 "@
     # Write the configuration to disk.
     Set-Content -Path $modelfilePath -Value $modelfileContent -Force -Encoding UTF8
@@ -710,7 +740,7 @@ $legacyModelfile = @"
 FROM ./$($firstModel.File)
 PARAMETER temperature 0.7
 PARAMETER top_p 0.9
-SYSTEM $($firstModel.Prompt)
+SYSTEM """$($firstModel.Prompt)"""
 "@
 Set-Content -Path "$USB_Drive\models\Modelfile" -Value $legacyModelfile -Force -Encoding UTF8
 
@@ -870,7 +900,7 @@ if (-Not (Test-Path "$USB_Drive\ollama\ollama.exe")) {
         Write-Host "      Starting Ollama temporarily to import $($modelsToImport.Count) model(s)..." -ForegroundColor DarkGray
         try {
             # Start the Ollama server as a hidden background process.
-            $script:ServerProcess = Start-Process -FilePath "$USB_Drive\ollama\ollama.exe" -ArgumentList "serve" -WindowStyle Hidden -PassThru
+            $script:ServerProcess = Start-Process -FilePath "$USB_Drive\ollama\ollama.exe" -ArgumentList "serve" -WorkingDirectory "$USB_Drive\models" -WindowStyle Hidden -PassThru
             Start-Sleep -Seconds 2 # Give the server a moment to initialize
 
             Write-Host "      Waiting for Ollama API to be ready..." -ForegroundColor DarkGray -NoNewline
@@ -886,15 +916,19 @@ if (-Not (Test-Path "$USB_Drive\ollama\ollama.exe")) {
             foreach ($m in $modelsToImport) {
                 Write-Host "      Importing $($m.Name)..." -ForegroundColor Yellow
                 try {
-                    $null = & "$USB_Drive\ollama\ollama.exe" create $m.Local -f "Modelfile-$($m.Local)" 2>&1
+                    $out = & "$USB_Drive\ollama\ollama.exe" create $m.Local -f "Modelfile-$($m.Local)" 2>&1
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "Ollama create returned exit code $LASTEXITCODE. Output: $($out -join ' ')"
+                    }
                     Write-Host "      $($m.Name) imported successfully!" -ForegroundColor Green
                 } catch {
-                    Write-Host "      ERROR: Failed to import $($m.Name)" -ForegroundColor Red
+                    Write-Host "      ERROR: Failed to import $($m.Name): $_" -ForegroundColor Red
                     $downloadErrors += "Import: $($m.Name)"
                 }
             }
         } catch {
             Write-Host "      ERROR: Could not start Ollama server for import. $_" -ForegroundColor Red
+            $downloadErrors += "Ollama Engine (Server Start)"
         } finally {
             # Ensure the background server process is stopped and cleaned up.
             Cleanup-Server
@@ -1032,3 +1066,4 @@ Write-Host ""
 try { Stop-Transcript | Out-Null } catch {}
 # Pause execution before closing the window so the user can read the summary.
 Pause-AnyKey
+if ($downloadErrors.Count -gt 0) { exit 1 } else { exit 0 }

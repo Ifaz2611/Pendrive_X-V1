@@ -9,10 +9,10 @@ echo USB: %USB_ROOT%
 echo.
 
 :: FS check
-for /f "usebackq tokens=*" %%a in (`powershell -NoProfile -Command "try{$d='%~d0'; $v=Get-CimInstance -ClassName Win32_LogicalDisk -Filter \"DeviceID='$d'\" -ErrorAction Stop; \"$($v.FileSystem)|$([math]::Round($v.FreeSpace/1GB,1))|$([math]::Round($v.Size/1GB,1))\"} catch {'unknown'}"`) do echo FS ^& Space: %%a
+powershell -NoProfile -Command "$d='%~d0'; try { $v=Get-CimInstance Win32_LogicalDisk -Filter ('DeviceID=''{0}''' -f $d) -ErrorAction Stop; Write-Host ('FS: {0} | Free: {1} GB | Total: {2} GB' -f $v.FileSystem, [math]::Round($v.FreeSpace/1GB,1), [math]::Round($v.Size/1GB,1)) } catch { Write-Host 'FS & Space: unknown' }"
 
 :: RAM
-for /f "usebackq tokens=*" %%a in (`powershell -NoProfile -Command "try{[math]::Round((Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).TotalPhysicalMemory/1GB,1)} catch {-1}"`) do echo RAM GB: %%a
+powershell -NoProfile -Command "try { $m=Get-CimInstance Win32_ComputerSystem -ErrorAction Stop; Write-Host ('RAM: {0} GB' -f [math]::Round($m.TotalPhysicalMemory/1GB,1)) } catch { Write-Host 'RAM GB: unknown' }"
 
 :: Installed models
 if exist "%USB_ROOT%models\installed-models.txt" (
@@ -37,10 +37,10 @@ if exist "%USB_ROOT%anythingllm\AnythingLLM.exe" (echo AnythingLLM: FOUND) else 
 :: .env
 echo.
 echo .env:
-if exist "%USB_ROOT%anythingllm_data\storage\.env" (type "%USB_ROOT%anythingllm_data\storage\.env") else (echo  (none))
+if exist "%USB_ROOT%anythingllm_data\storage\.env" (type "%USB_ROOT%anythingllm_data\storage\.env") else (echo   [none])
 
 :: Port 11434 busy?
-powershell -NoProfile -Command "try{$c=Test-NetConnection 127.0.0.1 -Port 11434 -WarningAction SilentlyContinue; if($c.TcpTestSucceeded){Write-Host 'Port 11434: IN USE (host Ollama may be running)'} else {Write-Host 'Port 11434: free'}} catch {Write-Host 'Port check skipped'}" 2>nul
+powershell -NoProfile -Command "try { $s=New-Object System.Net.Sockets.TcpClient; $s.Connect('127.0.0.1', 11434); Write-Host 'Port 11434: IN USE (host Ollama may be running)'; $s.Dispose() } catch { Write-Host 'Port 11434: free' }" 2>nul
 
 echo.
 echo Logs: %USB_ROOT%installer_data\logs\ , %USB_ROOT%anythingllm_data\logs\

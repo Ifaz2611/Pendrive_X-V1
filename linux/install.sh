@@ -27,11 +27,11 @@ read -r
 # Run the preflight check first to ensure we target the correct USB drive
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ -f "$SCRIPT_DIR/preflight-check.sh" ]]; then
-    bash "$SCRIPT_DIR/preflight-check.sh"
+    bash "$SCRIPT_DIR/preflight-check.sh" "$@"
     EXIT_CODE=$?
 else
     # Fallback if preflight is missing
-    bash "$SCRIPT_DIR/install-core.sh"
+    bash "$SCRIPT_DIR/install-core.sh" "$@"
     EXIT_CODE=$?
 fi
 

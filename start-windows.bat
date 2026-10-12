@@ -12,16 +12,16 @@ echo ===================================================
 :: -------------------------------------------------------
 set "LOG_DIR=%~dp0anythingllm_data\logs"
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%" 2>nul
-for /f "tokens=1-3 delims=/ " %%a in ('date /t') do set "LOG_DATE=%%c-%%a-%%b"
-for /f "tokens=1-2 delims=: " %%a in ('time /t') do set "LOG_TIME=%%a%%b"
-set "LOG_FILE=%LOG_DIR%\launcher-%LOG_DATE%-%LOG_TIME%.log"
+for /f "usebackq tokens=*" %%d in (`powershell -NoProfile -Command "Get-Date -Format 'yyyyMMdd-HHmmss'"`) do set "LOG_TS=%%d"
+if not defined LOG_TS set "LOG_TS=session"
+set "LOG_FILE=%LOG_DIR%\launcher-%LOG_TS%.log"
 :: Simple log: append key events
 echo [%date% %time%] Launcher started >> "%LOG_FILE%" 2>nul
 
 :: -------------------------------------------------------
 :: FAT32 GUARD — mirror preflight-check.sh:484
 :: -------------------------------------------------------
-for /f "usebackq tokens=*" %%a in (`powershell -NoProfile -Command "try{$d='%~d0'; $v=Get-CimInstance -ClassName Win32_LogicalDisk -Filter \"DeviceID='$d'\" -ErrorAction Stop; $v.FileSystem} catch {''}"`) do set "FS_TYPE=%%a"
+for /f "usebackq tokens=*" %%a in (`powershell -NoProfile -Command "$d='%~d0'; try{$v=Get-CimInstance -ClassName Win32_LogicalDisk -Filter ('DeviceID=''{0}''' -f $d) -ErrorAction Stop; $v.FileSystem} catch {''}"`) do set "FS_TYPE=%%a"
 if /I "%FS_TYPE%"=="FAT32" (
     echo [ERROR] FAT32 filesystem detected on %~d0 — 4 GB per-file limit will block GGUF models ^! >> "%LOG_FILE%" 2>nul
     echo.
@@ -41,11 +41,36 @@ if /I "%FS_TYPE%"=="FAT" (
 :: IMPORTANT: All paths must point to USB, not the PC!
 :: -------------------------------------------------------
 :: Use quoted assignments to handle spaces in USB path (e.g. "Pendrive X/Test Drive")
+set "OLLAMA_EXE=%~dp0ollama\ollama.exe"
+set "APP_PATH=%~dp0anythingllm\AnythingLLM.exe"
+set "ESC_OLLAMA_EXE=%OLLAMA_EXE:'=''%"
+set "ESC_APP_PATH=%APP_PATH:'=''%"
 set "OLLAMA_MODELS=%~dp0ollama\data"
 set "STORAGE_DIR=%~dp0anythingllm_data"
 set "ANYTHINGLLM_PROFILE=%STORAGE_DIR%\anythingllm-desktop"
 set "APPDATA=%~dp0anythingllm_data"
 set "LOCALAPPDATA=%~dp0anythingllm_data"
+
+:: Validate core executables early before starting background services
+if not exist "%OLLAMA_EXE%" (
+    echo.
+    echo ERROR: Ollama engine was not found at:
+    echo   %OLLAMA_EXE%
+    echo Please run install.bat first to set up the engine and models.
+    echo.
+    pause
+    exit /b 1
+)
+
+if not exist "%APP_PATH%" (
+    echo.
+    echo ERROR: AnythingLLM was not found at:
+    echo   %APP_PATH%
+    echo Please run install.bat first to install AnythingLLM.
+    echo.
+    pause
+    exit /b 1
+)
 
 :: Create the data folder on USB if it doesn't exist
 if not exist "%~dp0anythingllm_data" mkdir "%~dp0anythingllm_data" 2>nul
@@ -68,12 +93,22 @@ echo [%date% %time%] Port %OLLAMA_PORT% >> "%LOG_FILE%" 2>nul
 set "ENV_FILE=%~dp0anythingllm_data\storage\.env"
 if not exist "%~dp0anythingllm_data\storage" mkdir "%~dp0anythingllm_data\storage" 2>nul
 
-:: Read the first model from installed-models.txt if it exists
+:: Read model preference (preserve user UI choice if existing)
 set "DEFAULT_MODEL=nemomix-local"
-if exist "%~dp0models\installed-models.txt" (
-    for /f "usebackq tokens=1 delims=|" %%a in ("%~dp0models\installed-models.txt") do (
-        set "DEFAULT_MODEL=%%a"
-        goto :GotModel
+set "SAVED_MODEL="
+if exist "%ENV_FILE%" (
+    for /f "usebackq tokens=1,2 delims==" %%a in ("%ENV_FILE%") do (
+        if /I "%%a"=="OLLAMA_MODEL_PREF" if not "%%b"=="" set "SAVED_MODEL=%%b"
+    )
+)
+if defined SAVED_MODEL (
+    set "DEFAULT_MODEL=%SAVED_MODEL%"
+) else (
+    if exist "%~dp0models\installed-models.txt" (
+        for /f "usebackq tokens=1 delims=|" %%a in ("%~dp0models\installed-models.txt") do (
+            set "DEFAULT_MODEL=%%a"
+            goto :GotModel
+        )
     )
 )
 :GotModel
@@ -116,7 +151,8 @@ if "%NEEDS_FIX%"=="1" (
 ) else (
     :: Even if not NEEDS_FIX, ensure OLLAMA_BASE_PATH points to current dynamic port, preserving token limit
     :: Patch port without clobbering token limit
-    powershell -NoProfile -Command "$f='%ENV_FILE%'; $c=Get-Content $f -Raw -ErrorAction SilentlyContinue; if($c){ $c=$c -replace 'OLLAMA_BASE_PATH=http://[^\r\n]+', 'OLLAMA_BASE_PATH=http://%OLLAMA_HOST%'; Set-Content -Path $f -Value $c -NoNewline -Encoding UTF8 }" >nul 2>&1
+    set "ESC_ENV_FILE=%ENV_FILE:'=''%"
+    powershell -NoProfile -Command "$f='%ESC_ENV_FILE%'; $c=Get-Content $f -Raw -ErrorAction SilentlyContinue; if($c){ $c=$c -replace 'OLLAMA_BASE_PATH=http://[^\r\n]+', 'OLLAMA_BASE_PATH=http://%OLLAMA_HOST%'; Set-Content -Path $f -Value $c -NoNewline -Encoding UTF8 }" >nul 2>&1
     echo [+] Patched OLLAMA_BASE_PATH to %OLLAMA_HOST% ^(preserved token_limit=%TOKEN_LIMIT%^)
 )
 
@@ -135,13 +171,11 @@ if exist "%~dp0models\installed-models.txt" (
 :: Start Ollama Engine silently in the background with PID capture — use quoted path for spaces
 echo Starting Ollama Engine on %OLLAMA_HOST%...
 set "OLLAMA_PID="
-:: Escape single quotes in path for PowerShell by doubling them
-set "OLLAMA_EXE=%~dp0ollama\ollama.exe"
-for /f "usebackq tokens=*" %%p in (`powershell -NoProfile -Command "$p=Start-Process -FilePath '%OLLAMA_EXE%' -ArgumentList 'serve' -WindowStyle Hidden -PassThru; $p.Id"`) do set "OLLAMA_PID=%%p"
+for /f "usebackq tokens=*" %%p in (`powershell -NoProfile -Command "$p=Start-Process -FilePath '%ESC_OLLAMA_EXE%' -ArgumentList 'serve' -WindowStyle Hidden -PassThru; $p.Id"`) do set "OLLAMA_PID=%%p"
 if not defined OLLAMA_PID (
     echo [WARN] Could not capture Ollama PID - fallback to background start
     echo [%date% %time%] WARN PID capture failed, fallback >> "%LOG_FILE%" 2>nul
-    start "" /B "%~dp0ollama\ollama.exe" serve
+    start "" /B "%OLLAMA_EXE%" serve
 ) else (
     echo Ollama PID: %OLLAMA_PID%
     echo [%date% %time%] Ollama PID %OLLAMA_PID% >> "%LOG_FILE%" 2>nul
@@ -151,18 +185,12 @@ if not defined OLLAMA_PID (
 set "PID_FILE=%~dp0anythingllm_data\.session_pids"
 if defined OLLAMA_PID echo %OLLAMA_PID% > "%PID_FILE%"
 
-:: Health check: wait for Ollama API instead of blind 3s sleep — use dynamic host
+:: Health check: wait for Ollama API in single PowerShell polling loop
 echo Waiting for Ollama to be ready...
 set "OLLAMA_READY=0"
-for /L %%i in (1,1,30) do (
-    powershell -NoProfile -Command "try { Invoke-RestMethod -Uri 'http://%OLLAMA_HOST%/api/tags' -TimeoutSec 2 | Out-Null; exit 0 } catch { exit 1 }" >nul 2>&1
-    if not errorlevel 1 (
-        set "OLLAMA_READY=1"
-        goto :OllamaReady
-    )
-    timeout /t 1 /nobreak >nul
-)
-:OllamaReady
+powershell -NoProfile -Command "$ready=$false; for($i=0; $i -lt 30; $i++){ try{ Invoke-RestMethod -Uri 'http://%OLLAMA_HOST%/api/tags' -TimeoutSec 1 | Out-Null; $ready=$true; break } catch { Start-Sleep -Seconds 1 } }; if($ready){ exit 0 } else { exit 1 }" >nul 2>&1
+if not errorlevel 1 set "OLLAMA_READY=1"
+
 if "%OLLAMA_READY%"=="0" (
     echo [WARN] Ollama did not become ready in 30s - continuing anyway...
     echo [%date% %time%] WARN Ollama not ready 30s >> "%LOG_FILE%" 2>nul
@@ -170,27 +198,8 @@ if "%OLLAMA_READY%"=="0" (
     echo Ollama is ready.
 )
 
-:: Find and launch AnythingLLM
+:: Launch AnythingLLM Interface
 echo Starting AnythingLLM Interface...
-
-if exist "%~dp0anythingllm\AnythingLLM.exe" (
-    set "APP_PATH=%~dp0anythingllm\AnythingLLM.exe"
-    goto LaunchApp
-)
-
-echo.
-echo ERROR: AnythingLLM was not found in 'anythingllm' folder!
-echo.
-echo Directory Listing for Diagnostic:
-dir "%~dp0anythingllm"
-echo.
-echo Please run install.bat first to download and extract everything.
-echo.
-:: Clean up orphan Ollama if we started one
-if defined OLLAMA_PID taskkill /PID %OLLAMA_PID% /T /F >nul 2>&1
-if exist "%PID_FILE%" del "%PID_FILE%" 2>nul
-pause
-exit /b 1
 
 :LaunchApp
 :: CRITICAL: We MUST wipe ONLY hardware-dependent Electron caches for portability.
@@ -234,10 +243,12 @@ if defined OLLAMA_PID (
     for /f "tokens=1" %%a in (%PID_FILE%) do taskkill /PID %%a /T /F >nul 2>&1
     del "%PID_FILE%" 2>nul
 ) else (
-    :: Last resort: only kill ollama.exe that lives on THIS USB path — quoted for spaces
-    for /f "usebackq tokens=*" %%p in (`powershell -NoProfile -Command "Get-Process ollama -ErrorAction SilentlyContinue | Where-Object {$_.Path -eq '%OLLAMA_EXE%'} | Select-Object -ExpandProperty Id -First 1"`) do taskkill /PID %%p /T /F >nul 2>&1
+    :: Last resort: only kill ollama.exe that lives on THIS USB path
+    for /f "usebackq tokens=*" %%p in (`powershell -NoProfile -Command "Get-Process ollama -ErrorAction SilentlyContinue | Where-Object {$_.Path -eq '%ESC_OLLAMA_EXE%'} | Select-Object -ExpandProperty Id -First 1"`) do taskkill /PID %%p /T /F >nul 2>&1
 )
-taskkill /F /IM "AnythingLLM.exe" >nul 2>&1
+
+:: Terminate AnythingLLM only from this USB path to avoid affecting host instances
+powershell -NoProfile -Command "Get-Process -Name AnythingLLM -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '%ESC_APP_PATH%' -or $_.Path -like '%~dp0*' } | ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }" >nul 2>&1
 if exist "%PID_FILE%" del "%PID_FILE%" 2>nul
 echo [%date% %time%] Shutdown complete >> "%LOG_FILE%" 2>nul
 echo.
