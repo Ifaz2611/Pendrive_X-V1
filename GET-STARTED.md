@@ -123,21 +123,63 @@ Use the launcher for your operating system:
 | Linux | `bash linux/start-linux.sh` |
 | macOS | `./start-mac.command` |
 
-Keep the terminal window open while using the AI. It runs the Ollama engine in the background and uses a local address such as:
+Keep the terminal window open while using the AI. It runs the selected engine
+(Ollama or llama.cpp) in the background and uses a local address such as:
 
 ```text
-http://127.0.0.1:11434
+http://127.0.0.1:11434     (Ollama)
+http://127.0.0.1:8081      (llama.cpp)
 ```
 
 AnythingLLM should open automatically.
 
-## 6. Choosing a model
+## 6. Choosing the inference engine
 
-In AnythingLLM:
+Pendrive_X can run two engines:
+
+| Engine | Best for | Notes |
+|---|---|---|
+| **Ollama** (`ollama`) | Default, easiest | Background service; supports `ollama` model aliases |
+| **llama.cpp** (`llamacpp`) | Low-RAM PCs | Standalone `llama-server`; saves ~1.5–2 GB RAM and starts faster |
+
+Choose at install time:
+
+```bat
+install.bat --engine=ollama
+install.bat --engine=llamacpp
+```
+
+```bash
+bash linux/install-core.sh /path/to/usb --engine=llamacpp
+```
+
+Or switch later by editing `.env` on the USB root:
+
+```text
+INFERENCE_ENGINE=llamacpp
+```
+
+Useful llama.cpp settings in the same file:
+
+```text
+LLAMACPP_VARIANT=auto     # auto, cuda, rocm, vulkan, cpu
+LLAMACPP_MODEL=           # empty = first installed model
+LLAMACPP_NGL=auto         # GPU layers (auto = hardware detection)
+LLAMACPP_THREADS=auto
+LLAMACPP_CTX=auto
+```
+
+The launchers automatically configure AnythingLLM for the chosen engine, so
+you do not need to change the provider by hand.
+
+## 7. Choosing a model
+
+The launchers select the first installed model (or `LLAMACPP_MODEL` in `.env`)
+automatically. To pick a different one inside AnythingLLM:
 
 1. Open **Settings**.
 2. Open the **LLM** or **LLM Provider** section.
-3. Select **Ollama**.
+3. Select **Ollama** (Ollama engine) or **Generic OpenAI** (llama.cpp engine).
 4. Choose one of the installed models.
 5. Save the settings.
 
@@ -159,7 +201,13 @@ The relevant setting is:
 OLLAMA_MODEL_PREF=model-name-local
 ```
 
-## 7. Changing the token limit
+or, for the llama.cpp engine:
+
+```text
+GENERIC_OPEN_AI_MODEL_PREF=model-name-local
+```
+
+## 8. Changing the token limit
 
 The default context size is 4096 tokens. To increase it:
 
@@ -181,7 +229,7 @@ The default context size is 4096 tokens. To increase it:
 
 Higher values require more RAM. If the computer becomes slow or the model stops responding, use a lower value.
 
-## 8. Adding another model later
+## 9. Adding another model later
 
 Run the installer again and select the additional model. Existing valid downloads are skipped.
 
@@ -199,7 +247,31 @@ bash linux/install-core.sh /path/to/usb
 
 You can also choose `c` or `custom` and provide a direct `.gguf` URL from Hugging Face.
 
-## 9. Shutting down safely
+## 10. Using it from a phone (LAN mode)
+
+Start the launcher with `--server` (or `--lan`) to reach the AI from another
+device on the same Wi-Fi:
+
+```bat
+start-windows.bat --server
+start-windows.bat --headless
+```
+
+```bash
+bash linux/start-linux.sh --server
+./start-mac.command --lan
+```
+
+The terminal shows a LAN address such as `http://192.168.1.20:8081/` and a QR
+code. Scan the QR code with a phone camera, or type the address into the phone's
+browser.
+
+- With **llama.cpp**, the browser opens llama-server's built-in chat UI.
+- With **Ollama**, Pendrive_X starts a small mobile chat page on port `8090`.
+- `--headless` skips the desktop AnythingLLM window and keeps only the server.
+- There is no password. Use this only on a network you trust.
+
+## 11. Shutting down safely
 
 When you finish using the AI:
 
@@ -209,6 +281,26 @@ When you finish using the AI:
 4. Safely eject the USB drive.
 
 Do not unplug the USB while the AI is still running. Chats and settings are saved on the drive.
+
+## 12. Updating engines and the UI
+
+The updater replaces engine binaries and AnythingLLM, but **never** touches
+`models/*.gguf`, `ollama/data`, or `anythingllm_data` (chats and settings).
+
+```bat
+install.bat --update-engine
+install.bat --update-engine=llamacpp
+start-windows.bat --update-engine
+```
+
+```bash
+bash linux/install-core.sh /path/to/usb --update-engine
+bash linux/start-linux.sh --update-engine=anythingllm
+./start-mac.command --update-engine
+```
+
+`all` refreshes only components that are installed. To change which version is
+installed, edit `versions.env` first, then run the updater.
 
 ## Troubleshooting
 
@@ -230,6 +322,18 @@ E:\anythingllm
 - Restart the launcher.
 - Make sure the USB has free space.
 - Check the launcher logs in `anythingllm_data/logs`.
+
+### llama.cpp does not start
+
+- Make sure `llamacpp/` exists on the USB. If not, run `install.bat --engine=llamacpp` or `bash linux/install-core.sh /path/to/usb --engine=llamacpp`.
+- If the GPU build crashes, set `LLAMACPP_VARIANT=cpu` in `.env` and run `--update-engine=llamacpp`.
+- Check `anythingllm_data/logs` for the engine log.
+
+### The phone cannot connect in LAN mode
+
+- Both devices must be on the same Wi-Fi network.
+- Allow the displayed port through the host firewall.
+- Guest networks and "AP isolation" often block device-to-device traffic.
 
 ### The AI is slow
 

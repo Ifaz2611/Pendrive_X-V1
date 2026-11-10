@@ -10,6 +10,8 @@
 # -CustomUrl: Direct URL to a custom GGUF model file
 # -CustomName: Local name for the custom model
 # -Yes: Skips interactive confirmation prompts (non-interactive mode)
+# -Engine: Inference backend to install: ollama, llamacpp, or both
+# -UpdateEngine: Refresh installed engines/UI without touching models or chats
 # -Help: Displays usage instructions and exits
 # ======================================================================================
 # - I Add comment for better understanding of the script's purpose and parameters.
@@ -18,6 +20,11 @@ param(
     [string]$Models = "",
     [string]$CustomUrl = "",
     [string]$CustomName = "",
+    # Accepts install engines (ollama|llamacpp|both) and updater targets
+    # (all|anythingllm|ui). Validated at runtime so -UpdateEngine can use
+    # the same parameter.
+    [string]$Engine = "",
+    [switch]$UpdateEngine,
     [switch]$Yes,
     [switch]$Help
 )
@@ -31,6 +38,8 @@ $USB_Drive = Split-Path -Parent $MyInvocation.MyCommand.Path
 if ($Help) {
     Write-Host "Pendrive_X installer — Usage:" -ForegroundColor Cyan
     Write-Host "  powershell -ExecutionPolicy Bypass -File install-core.ps1 [-Models 1,3] [-CustomUrl https://...gguf] [-Yes]" -ForegroundColor White
+    Write-Host "  powershell -ExecutionPolicy Bypass -File install-core.ps1 [-Engine ollama|llamacpp|both]" -ForegroundColor White
+    Write-Host "  powershell -ExecutionPolicy Bypass -File install-core.ps1 -UpdateEngine [-Engine all|ollama|anythingllm|llamacpp] [-Yes]" -ForegroundColor White
     Write-Host "  Examples: -Models all | -Models 1,3,c -CustomUrl https://huggingface.co/.../model.gguf" -ForegroundColor DarkGray
     exit 0
 }
@@ -98,6 +107,128 @@ trap {
 # Also handle PowerShell engine exit via Register-EngineEvent
 # Register an event handler to trigger cleanup when the PowerShell engine exits normally.
 try { Register-EngineEvent PowerShell.Exiting -Action { Cleanup-Server } | Out-Null } catch {}
+
+# -----------------------------------------------------------------
+# RUNTIME CONFIG (.env on USB root)
+# -----------------------------------------------------------------
+# Read a single KEY=VALUE from a dotenv-style file (never executes it).
+function Get-EnvValue {
+    param([string]$Path, [string]$Key)
+    if (-not (Test-Path -LiteralPath $Path)) { return "" }
+    try {
+        foreach ($line in Get-Content -LiteralPath $Path -ErrorAction Stop) {
+            if ($line -match ('^\s*' + [regex]::Escape($Key) + '\s*=\s*(.*)$')) {
+                $value = $Matches[1].Trim()
+                if ($value -match '^"(.*)"$') { $value = $Matches[1] }
+                elseif ($value -match "^'(.*)'$") { $value = $Matches[1] }
+                return $value
+            }
+        }
+    } catch { }
+    return ""
+}
+
+# Write UTF-8 without a BOM (Windows PowerShell 5.1 adds one for -Encoding UTF8,
+# which breaks the batch launcher's dotenv parser).
+function Write-TextFile {
+    param([string]$Path, [string[]]$Lines)
+    $enc = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllLines($Path, $Lines, $enc)
+}
+
+# Update a key in-place, appending it when missing. Preserves comments/order.
+function Set-EnvValue {
+    param([string]$Path, [string]$Key, [string]$Value)
+    $lines = @()
+    if (Test-Path -LiteralPath $Path) {
+        try { $lines = @(Get-Content -LiteralPath $Path -ErrorAction Stop) } catch { $lines = @() }
+    }
+    $found = $false
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -match ('^\s*' + [regex]::Escape($Key) + '\s*=')) {
+            $lines[$i] = "$Key=$Value"
+            $found = $true
+        }
+    }
+    if (-not $found) { $lines += "$Key=$Value" }
+    Write-TextFile -Path $Path -Lines $lines
+}
+
+# Create <USB>\.env from .env.example (or sensible defaults) on first install.
+function Initialize-RootEnv {
+    $rootEnv = Join-Path $USB_Drive ".env"
+    if (Test-Path -LiteralPath $rootEnv) { return $rootEnv }
+    $example = Join-Path $USB_Drive ".env.example"
+    if (Test-Path -LiteralPath $example) {
+        Copy-Item -LiteralPath $example -Destination $rootEnv -Force
+    } else {
+        Write-TextFile -Path $rootEnv -Lines @(
+            "INFERENCE_ENGINE=ollama",
+            "AUTO_TUNE=1",
+            "SERVER_MODE=0",
+            "OLLAMA_PORT=0",
+            "LLAMACPP_PORT=0",
+            "LAN_CHAT_PORT=8090",
+            "LLAMACPP_MODEL=",
+            "LLAMACPP_NGL=auto",
+            "LLAMACPP_THREADS=auto",
+            "LLAMACPP_CTX=auto",
+            "LLAMACPP_VARIANT=auto",
+            "OLLAMA_KEEP_ALIVE=30m"
+        )
+    }
+    Write-Host "  Created runtime config: $rootEnv" -ForegroundColor Green
+    return $rootEnv
+}
+
+# -----------------------------------------------------------------
+# IN-PLACE ENGINE UPDATE MODE (--update-engine)
+# -----------------------------------------------------------------
+if ($UpdateEngine) {
+    Write-Host ""
+    Write-Host "==========================================================" -ForegroundColor Cyan
+    Write-Host "   Pendrive_X - Engine / UI update                         " -ForegroundColor Cyan
+    Write-Host "==========================================================" -ForegroundColor Cyan
+    $updater = Join-Path $USB_Drive "tools\update-engine.ps1"
+    if (-not (Test-Path -LiteralPath $updater)) {
+        Write-Host "ERROR: tools\update-engine.ps1 is missing." -ForegroundColor Red
+        try { Stop-Transcript | Out-Null } catch {}
+        exit 1
+    }
+    # NOTE: do not call this $updateEngine - PowerShell is case-insensitive
+    # and it would collide with the [switch]$UpdateEngine parameter.
+    $updateTarget = if ($Engine) { $Engine.ToLower() } else { "all" }
+    # "both" is an install-time concept; the updater refreshes everything.
+    if ($updateTarget -eq "both") { $updateTarget = "all" }
+    $updateArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $updater, "-UsbRoot", $USB_Drive, "-Engine", $updateTarget)
+    if ($Yes) { $updateArgs += "-Yes" }
+    & powershell @updateArgs
+    $updateExit = $LASTEXITCODE
+    Write-Host ""
+    Write-Host "  Log saved to: $LogFile" -ForegroundColor DarkGray
+    try { Stop-Transcript | Out-Null } catch {}
+    if (-not $Yes) { Pause-AnyKey }
+    exit $updateExit
+}
+
+# Load / create the portable runtime configuration.
+$RootEnvFile = Initialize-RootEnv
+
+# Resolve which inference engine(s) to install.
+# -Engine wins, otherwise honor INFERENCE_ENGINE already in .env.
+$configuredEngine = Get-EnvValue -Path $RootEnvFile -Key "INFERENCE_ENGINE"
+$selectedEngine = if ($Engine) { $Engine.ToLower() } else { $configuredEngine.ToLower() }
+if ($selectedEngine -notin @("ollama", "llamacpp", "both")) { $selectedEngine = "ollama" }
+
+$InstallOllama = ($selectedEngine -ne "llamacpp")
+$InstallLlamaCpp = ($selectedEngine -eq "llamacpp" -or $selectedEngine -eq "both")
+$ActiveEngine = if ($selectedEngine -eq "both") { "llamacpp" } else { $selectedEngine }
+
+# Persist the choice so every launcher picks the same backend.
+Set-EnvValue -Path $RootEnvFile -Key "INFERENCE_ENGINE" -Value $ActiveEngine
+if ($Engine) {
+    Write-Host "  Inference engine selected: $selectedEngine" -ForegroundColor Cyan
+}
 
 # -----------------------------------------------------------------
 # MODEL CATALOG (All presets use Q5_K_M quantization from bartowski)
@@ -594,7 +725,7 @@ if ($SelectedModels.Count -eq 0) {
     Write-Host "  ERROR: No models selected!" -ForegroundColor Red
     Write-Host "  Please run the installer again and pick at least one model." -ForegroundColor Red
     Write-Host ""
-    Pause-AnyKey
+    if (-not $Yes) { Pause-AnyKey }
     exit 1 # Exit if no models were chosen
 }
 
@@ -633,7 +764,7 @@ if ($SelectedModels.Count -ge 3 -or $UserChoice.Trim().ToLower() -eq "all") {
             Write-Host "  Cancelled. Run the installer again to choose fewer models." -ForegroundColor Yellow
             Write-Host ""
             Pause-AnyKey
-            exit 1
+            exit 0
         }
     }
 }
@@ -656,6 +787,7 @@ Write-Host "[2/6] Creating folders on USB drive..." -ForegroundColor Yellow
 # Create necessary directories for models, Ollama, AnythingLLM, and installer data.
 New-Item -ItemType Directory -Force -Path "$USB_Drive\models" | Out-Null
 New-Item -ItemType Directory -Force -Path "$USB_Drive\ollama" | Out-Null
+New-Item -ItemType Directory -Force -Path "$USB_Drive\llamacpp" | Out-Null
 New-Item -ItemType Directory -Force -Path "$USB_Drive\anythingllm" | Out-Null
 New-Item -ItemType Directory -Force -Path "$USB_Drive\anythingllm_data" | Out-Null
 New-Item -ItemType Directory -Force -Path "$USB_Drive\installer_data" | Out-Null
@@ -729,8 +861,8 @@ PARAMETER temperature 0.7
 PARAMETER top_p 0.9
 SYSTEM """$($m.Prompt)"""
 "@
-    # Write the configuration to disk.
-    Set-Content -Path $modelfilePath -Value $modelfileContent -Force -Encoding UTF8
+    # Write the configuration to disk (BOM-free so Ollama/llama.cpp parse it).
+    Write-TextFile -Path $modelfilePath -Lines @($modelfileContent)
     Write-Host "      Config: $($m.Name) -> $($m.Local)" -ForegroundColor Green
 }
 
@@ -742,11 +874,11 @@ PARAMETER temperature 0.7
 PARAMETER top_p 0.9
 SYSTEM """$($firstModel.Prompt)"""
 "@
-Set-Content -Path "$USB_Drive\models\Modelfile" -Value $legacyModelfile -Force -Encoding UTF8
+Write-TextFile -Path "$USB_Drive\models\Modelfile" -Lines @($legacyModelfile)
 
 # Save a list of installed models to a text file for tracking.
-$installedList = $SelectedModels | ForEach-Object { "$($_.Local)|$($_.Name)|$($_.Label)" }
-Set-Content -Path "$USB_Drive\models\installed-models.txt" -Value ($installedList -join "`n") -Force -Encoding UTF8
+$installedList = @($SelectedModels | ForEach-Object { "$($_.Local)|$($_.Name)|$($_.Label)" })
+Write-TextFile -Path "$USB_Drive\models\installed-models.txt" -Lines $installedList
 Write-Host "      Saved model list to installed-models.txt" -ForegroundColor DarkGray
 # Migration: fix legacy nemomix-local_X alias if present from older installs
 # Migration script: fix legacy 'nemomix-local_X' alias if present from older installations.
@@ -757,7 +889,7 @@ try {
         if ($content -match 'nemomix-local_X') {
             # Replace the old alias with the new standard alias.
             $content = $content -replace 'nemomix-local_X', 'nemomix-local'
-            Set-Content -Path $legacyModelList -Value $content -Force -Encoding UTF8
+            Write-TextFile -Path $legacyModelList -Lines @($content)
             Write-Host "      Migrated legacy alias nemomix-local_X -> nemomix-local" -ForegroundColor Yellow
             # Also rename legacy Modelfile if exists
             # Also rename the legacy Modelfile if it exists.
@@ -769,34 +901,57 @@ try {
 } catch {}
 
 # =================================================================
-# STEP 5: Download Ollama (the AI engine)
+# STEP 5: Download the inference engine (Ollama and/or llama.cpp)
 # =================================================================
 Write-Host ""
-Write-Host "[5/6] Downloading Ollama AI Engine..." -ForegroundColor Yellow
-$OllamaURL  = $OllamaWinURL
-$OllamaDest = "$USB_Drive\ollama\ollama-windows-amd64.zip"
+Write-Host "[5/6] Downloading AI Engine(s)..." -ForegroundColor Yellow
 
-# Skip download if the Ollama executable is already present.
-if (Test-Path "$USB_Drive\ollama\ollama.exe") {
-    Write-Host "      Ollama already installed! Skipping..." -ForegroundColor Green
+if ($InstallOllama) {
+    Write-Host "      Ollama:" -ForegroundColor White
+    $OllamaURL  = $OllamaWinURL
+    $OllamaDest = "$USB_Drive\ollama\ollama-windows-amd64.zip"
+
+    # Skip download if the Ollama executable is already present.
+    if (Test-Path "$USB_Drive\ollama\ollama.exe") {
+        Write-Host "      Ollama already installed! Skipping..." -ForegroundColor Green
+    } else {
+        # Download the Ollama zip archive.
+        $ok = Invoke-SafeDownload -Url $OllamaURL -Dest $OllamaDest -MinSize 10000000 -Name "Ollama Engine" -ExpectedSHA256 ""
+        if ($ok) {
+            Write-Host "      Extracting Ollama..." -ForegroundColor Yellow
+            try {
+                # Extract the zip archive and clean up the installer.
+                Expand-Archive -Path $OllamaDest -DestinationPath "$USB_Drive\ollama" -Force
+                Remove-Item $OllamaDest -Force -ErrorAction SilentlyContinue
+                Write-Host "      Ollama Setup Complete!" -ForegroundColor Green
+            } catch {
+                Write-Host "      ERROR: Failed to extract Ollama. Please extract manually." -ForegroundColor Red
+                Write-Host "      File: $OllamaDest" -ForegroundColor DarkGray
+                $downloadErrors += "Ollama Extract"
+            }
+        } else {
+            Write-Host "      ERROR: Ollama download failed!" -ForegroundColor Red
+            $downloadErrors += "Ollama Engine"
+        }
+    }
 } else {
-    # Download the Ollama zip archive.
-    $ok = Invoke-SafeDownload -Url $OllamaURL -Dest $OllamaDest -MinSize 10000000 -Name "Ollama Engine" -ExpectedSHA256 ""
-    if ($ok) {
-        Write-Host "      Extracting Ollama..." -ForegroundColor Yellow
-        try {
-            # Extract the zip archive and clean up the installer.
-            Expand-Archive -Path $OllamaDest -DestinationPath "$USB_Drive\ollama" -Force
-            Remove-Item $OllamaDest -Force -ErrorAction SilentlyContinue
-            Write-Host "      Ollama Setup Complete!" -ForegroundColor Green
-        } catch {
-            Write-Host "      ERROR: Failed to extract Ollama. Please extract manually." -ForegroundColor Red
-            Write-Host "      File: $OllamaDest" -ForegroundColor DarkGray
-            $downloadErrors += "Ollama Extract"
+    Write-Host "      Ollama: skipped (llama.cpp engine selected)" -ForegroundColor DarkGray
+}
+
+if ($InstallLlamaCpp) {
+    Write-Host "      llama.cpp (portable llama-server):" -ForegroundColor White
+    $llamaInstaller = Join-Path $USB_Drive "tools\install-llamacpp.ps1"
+    $llamaVariant = Get-EnvValue -Path $RootEnvFile -Key "LLAMACPP_VARIANT"
+    if (-not $llamaVariant) { $llamaVariant = "auto" }
+    if (Test-Path -LiteralPath $llamaInstaller) {
+        & powershell -NoProfile -ExecutionPolicy Bypass -File $llamaInstaller -UsbRoot $USB_Drive -Variant $llamaVariant
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "      ERROR: llama.cpp setup failed." -ForegroundColor Red
+            $downloadErrors += "llama.cpp Engine"
         }
     } else {
-        Write-Host "      ERROR: Ollama download failed!" -ForegroundColor Red
-        $downloadErrors += "Ollama Engine"
+        Write-Host "      ERROR: tools\install-llamacpp.ps1 is missing." -ForegroundColor Red
+        $downloadErrors += "llama.cpp Engine (installer missing)"
     }
 }
 
@@ -857,10 +1012,12 @@ if (Test-Path $ExistingApp -PathType Leaf) {
 # IMPORT ALL SELECTED MODELS INTO OLLAMA ENGINE
 # =================================================================
 Write-Host ""
-Write-Host "Importing AI models into the Ollama engine..." -ForegroundColor Yellow
+Write-Host "Preparing AI models..." -ForegroundColor Yellow
 
-# Ensure the Ollama executable exists before attempting to import models.
-if (-Not (Test-Path "$USB_Drive\ollama\ollama.exe")) {
+# llama.cpp loads GGUF files directly, so only Ollama needs an import step.
+if (-not $InstallOllama) {
+    Write-Host "      Skipping Ollama import - llama.cpp reads models\*.gguf directly." -ForegroundColor DarkGray
+} elseif (-Not (Test-Path "$USB_Drive\ollama\ollama.exe")) {
     Write-Host "      ERROR: Ollama not found! Cannot import models." -ForegroundColor Red
     Write-Host "      Please re-run the installer to download Ollama." -ForegroundColor Red
 } else {
@@ -953,8 +1110,39 @@ New-Item -ItemType Directory -Force -Path $storageDir | Out-Null
 $firstModelLocal = $SelectedModels[0].Local
 $envFilePath = "$storageDir\.env"
 
-# Define the default environment variables to connect AnythingLLM to the local Ollama instance.
-$envContent = @"
+if ($ActiveEngine -eq "llamacpp") {
+    # AnythingLLM talks to llama-server through its OpenAI-compatible API.
+    $token = 4096
+    $tokVal = Get-EnvValue -Path $envFilePath -Key "GENERIC_OPEN_AI_MODEL_TOKEN_LIMIT"
+    if (-not $tokVal) { $tokVal = Get-EnvValue -Path $envFilePath -Key "OLLAMA_MODEL_TOKEN_LIMIT" }
+    if ($tokVal -match '^\d+$') { $token = [int]$tokVal }
+
+    $llamaPort = Get-EnvValue -Path $RootEnvFile -Key "LLAMACPP_PORT"
+    if ($llamaPort -notmatch '^\d+$' -or [int]$llamaPort -eq 0) { $llamaPort = "8081" }
+
+    # Keep unrelated user settings; replace only the LLM provider keys.
+    $kept = @()
+    if (Test-Path -LiteralPath $envFilePath) {
+        $kept = @(Get-Content -LiteralPath $envFilePath | Where-Object {
+            $_ -notmatch '^(LLM_PROVIDER|OLLAMA_BASE_PATH|OLLAMA_MODEL_PREF|OLLAMA_MODEL_TOKEN_LIMIT|GENERIC_OPEN_AI_BASE_PATH|GENERIC_OPEN_AI_MODEL_PREF|GENERIC_OPEN_AI_MODEL_TOKEN_LIMIT|GENERIC_OPEN_AI_MAX_TOKENS|GENERIC_OPEN_AI_API_KEY|EMBEDDING_ENGINE|VECTOR_DB)='
+        })
+    }
+
+    $newEnv = @($kept)
+    $newEnv += "LLM_PROVIDER=generic-openai"
+    $newEnv += "GENERIC_OPEN_AI_BASE_PATH=http://127.0.0.1:$llamaPort/v1"
+    $newEnv += "GENERIC_OPEN_AI_MODEL_PREF=$firstModelLocal"
+    $newEnv += "GENERIC_OPEN_AI_MODEL_TOKEN_LIMIT=$token"
+    $newEnv += "GENERIC_OPEN_AI_MAX_TOKENS=$token"
+    $newEnv += "GENERIC_OPEN_AI_API_KEY=sk-no-key"
+    $newEnv += "EMBEDDING_ENGINE=native"
+    $newEnv += "VECTOR_DB=lancedb"
+    Write-TextFile -Path $envFilePath -Lines $newEnv
+    Write-Host "      AnythingLLM configured for llama.cpp (generic-openai @ port $llamaPort)" -ForegroundColor Green
+    Write-Host "      Default model: $firstModelLocal (token_limit=$token)" -ForegroundColor DarkGray
+} else {
+    # Define the default environment variables to connect AnythingLLM to the local Ollama instance.
+    $envContent = @"
 LLM_PROVIDER=ollama
 OLLAMA_BASE_PATH=http://127.0.0.1:11434
 OLLAMA_MODEL_PREF=$firstModelLocal
@@ -963,41 +1151,41 @@ EMBEDDING_ENGINE=native
 VECTOR_DB=lancedb
 "@
 
-# Write the configuration if it doesn't already exist.
-if (-Not (Test-Path $envFilePath)) {
-    Set-Content -Path $envFilePath -Value $envContent -Force -Encoding UTF8
-    Write-Host "      AnythingLLM configured to use: $firstModelLocal" -ForegroundColor Green
-} else {
-    # If the file exists, check if it's already configured for Ollama to preserve user settings.
-    $existing = Get-Content $envFilePath -Raw -ErrorAction SilentlyContinue
-    if ($existing -match 'LLM_PROVIDER=ollama') {
-        Write-Host "      AnythingLLM already configured for Ollama — preserving user settings." -ForegroundColor Green
-        # Non-destructive patch: only add missing keys, never overwrite token limit
-        # Perform non-destructive patching: only add missing keys without overwriting existing custom values.
-        $needsPatch = $false
-        if ($existing -notmatch 'OLLAMA_MODEL_PREF=') {
-            Add-Content -Path $envFilePath -Value "OLLAMA_MODEL_PREF=$firstModelLocal" -Encoding UTF8
-            $needsPatch = $true
-        }
-        if ($existing -notmatch 'OLLAMA_MODEL_TOKEN_LIMIT=') {
-            Add-Content -Path $envFilePath -Value "OLLAMA_MODEL_TOKEN_LIMIT=4096" -Encoding UTF8
-            $needsPatch = $true
-        }
-        # If existing has token limit, leave it untouched (preservation fix)
-        # Log if a custom token limit was preserved.
-        $tokMatch = [regex]::Match($existing, 'OLLAMA_MODEL_TOKEN_LIMIT=(\d+)')
-        if ($tokMatch.Success) {
-            Write-Host "      Preserved custom token limit: $($tokMatch.Groups[1].Value)" -ForegroundColor DarkGray
-        }
-        if (-not $needsPatch) { Write-Host "      No patch needed." -ForegroundColor DarkGray }
+    # Write the configuration if it doesn't already exist.
+    if (-Not (Test-Path $envFilePath)) {
+        Write-TextFile -Path $envFilePath -Lines @($envContent)
+        Write-Host "      AnythingLLM configured to use: $firstModelLocal" -ForegroundColor Green
     } else {
-        # Preserve custom token limit even when migrating from anythingllm_ollama
-        # If migrating from an older configuration, preserve the custom token limit if it exists.
-        $tok = 4096
-        $m = [regex]::Match($existing, 'OLLAMA_MODEL_TOKEN_LIMIT=(\d+)')
-        if ($m.Success) { try { $tok = [int]$m.Groups[1].Value } catch {} }
-        # Generate the migrated content.
-        $migratedContent = @"
+        # If the file exists, check if it's already configured for Ollama to preserve user settings.
+        $existing = Get-Content $envFilePath -Raw -ErrorAction SilentlyContinue
+        if ($existing -match 'LLM_PROVIDER=ollama') {
+            Write-Host "      AnythingLLM already configured for Ollama — preserving user settings." -ForegroundColor Green
+            # Non-destructive patch: only add missing keys, never overwrite token limit
+            # Perform non-destructive patching: only add missing keys without overwriting existing custom values.
+            $needsPatch = $false
+            if ($existing -notmatch 'OLLAMA_MODEL_PREF=') {
+                Add-Content -Path $envFilePath -Value "OLLAMA_MODEL_PREF=$firstModelLocal" -Encoding UTF8
+                $needsPatch = $true
+            }
+            if ($existing -notmatch 'OLLAMA_MODEL_TOKEN_LIMIT=') {
+                Add-Content -Path $envFilePath -Value "OLLAMA_MODEL_TOKEN_LIMIT=4096" -Encoding UTF8
+                $needsPatch = $true
+            }
+            # If existing has token limit, leave it untouched (preservation fix)
+            # Log if a custom token limit was preserved.
+            $tokMatch = [regex]::Match($existing, 'OLLAMA_MODEL_TOKEN_LIMIT=(\d+)')
+            if ($tokMatch.Success) {
+                Write-Host "      Preserved custom token limit: $($tokMatch.Groups[1].Value)" -ForegroundColor DarkGray
+            }
+            if (-not $needsPatch) { Write-Host "      No patch needed." -ForegroundColor DarkGray }
+        } else {
+            # Preserve custom token limit even when migrating from anythingllm_ollama
+            # If migrating from an older configuration, preserve the custom token limit if it exists.
+            $tok = 4096
+            $m = [regex]::Match($existing, 'OLLAMA_MODEL_TOKEN_LIMIT=(\d+)')
+            if ($m.Success) { try { $tok = [int]$m.Groups[1].Value } catch {} }
+            # Generate the migrated content.
+            $migratedContent = @"
 LLM_PROVIDER=ollama
 OLLAMA_BASE_PATH=http://127.0.0.1:11434
 OLLAMA_MODEL_PREF=$firstModelLocal
@@ -1005,12 +1193,43 @@ OLLAMA_MODEL_TOKEN_LIMIT=$tok
 EMBEDDING_ENGINE=native
 VECTOR_DB=lancedb
 "@
-        Set-Content -Path $envFilePath -Value $migratedContent -Force -Encoding UTF8
-        Write-Host "      AnythingLLM reconfigured to use external Ollama (preserved token_limit=$tok)." -ForegroundColor Green
+            Write-TextFile -Path $envFilePath -Lines @($migratedContent)
+            Write-Host "      AnythingLLM reconfigured to use external Ollama (preserved token_limit=$tok)." -ForegroundColor Green
+        }
     }
+
+    Write-Host "      Default model: $firstModelLocal" -ForegroundColor DarkGray
 }
 
-Write-Host "      Default model: $firstModelLocal" -ForegroundColor DarkGray
+# =================================================================
+# HARDWARE PROFILE (used by launchers for acceleration auto-tuning)
+# =================================================================
+Write-Host ""
+Write-Host "Detecting hardware acceleration..." -ForegroundColor Yellow
+$hwScript = Join-Path $USB_Drive "tools\hardware.ps1"
+$firstGguf = Join-Path $USB_Drive "models\$($SelectedModels[0].File)"
+if (Test-Path -LiteralPath $hwScript) {
+    try {
+        $hwJson = & powershell -NoProfile -ExecutionPolicy Bypass -File $hwScript -ModelPath $firstGguf -Format json 2>$null
+        if ($hwJson) {
+            $hwText = (@($hwJson) -join "`n")
+            # BOM-free so doctor.bat and shell tools can read it verbatim.
+            $hwEnc = New-Object System.Text.UTF8Encoding($false)
+            $hwDir = Join-Path $USB_Drive "installer_data"
+            New-Item -ItemType Directory -Force -Path $hwDir | Out-Null
+            [System.IO.File]::WriteAllText((Join-Path $hwDir "hardware.json"), $hwText, $hwEnc)
+            try {
+                $hw = $hwText | ConvertFrom-Json
+                Write-Host "      Acceleration: $($hw.PENDRIVE_ACCEL_NOTE)" -ForegroundColor Green
+                Write-Host "      Layers offloaded: $($hw.PENDRIVE_NGL), threads: $($hw.PENDRIVE_THREADS), context: $($hw.PENDRIVE_CTX)" -ForegroundColor DarkGray
+            } catch { }
+        }
+    } catch {
+        Write-Host "      Hardware detection skipped (will auto-detect at launch)." -ForegroundColor DarkGray
+    }
+} else {
+    Write-Host "      tools\hardware.ps1 not found - launcher will use safe defaults." -ForegroundColor DarkGray
+}
 
 # =================================================================
 # FINAL SUMMARY
@@ -1053,8 +1272,13 @@ foreach ($m in $SelectedModels) {
 }
 
 Write-Host ""
+Write-Host "  Inference engine: $ActiveEngine" -ForegroundColor Cyan
+if ($ActiveEngine -eq "llamacpp") {
+    Write-Host "  Model file:       models\$($SelectedModels[0].File)" -ForegroundColor DarkGray
+}
 Write-Host "  To start your AI: Double-click  start-windows.bat" -ForegroundColor White
 Write-Host "  On a Mac:         Double-click  start-mac.command" -ForegroundColor White
+Write-Host "  LAN / phone mode: start-windows.bat --server" -ForegroundColor White
 Write-Host ""
 Write-Host "  TIP: In AnythingLLM, go to Settings > LLM to switch" -ForegroundColor DarkGray
 Write-Host "  between your installed models." -ForegroundColor DarkGray
@@ -1065,5 +1289,5 @@ Write-Host ""
 # Stop the PowerShell transcript to finalize the log file.
 try { Stop-Transcript | Out-Null } catch {}
 # Pause execution before closing the window so the user can read the summary.
-Pause-AnyKey
+if (-not $Yes) { Pause-AnyKey }
 if ($downloadErrors.Count -gt 0) { exit 1 } else { exit 0 }

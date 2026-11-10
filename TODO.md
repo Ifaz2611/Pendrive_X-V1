@@ -6,24 +6,28 @@ This document tracks upcoming architectural improvements, features, security har
 
 ## Phase 1: Engine & Architecture Enhancements
 
-- [ ] **Dual Inference Engine Support (`llama.cpp` / `llama-server`)**
+- [x] **Dual Inference Engine Support (`llama.cpp` / `llama-server`)**
   - Integrate standalone portable `llama-server` binaries for Windows (`llama-server.exe`), macOS (Metal), and Linux (CUDA/ROCm/CPU).
   - Provide a zero-overhead alternative to Ollama for low-RAM hosts (saves ~1.5–2 GB RAM and reduces cold-start latency).
   - Allow toggling backend in `.env` (`INFERENCE_ENGINE=ollama` vs `INFERENCE_ENGINE=llamacpp`).
+  - Implementation: `tools/install-llamacpp.sh` / `.ps1`, pinned `LLAMACPP_*` URLs in `versions.env`, and `tools/start-engine.ps1` for Windows.
 
-- [ ] **In-Place Engine & UI Updater (`--update-engine`)**
+- [x] **In-Place Engine & UI Updater (`--update-engine`)**
   - Add an update flag to `install.bat`, `install-core.ps1`, `start-mac.command`, and `linux/install-core.sh`.
   - Downloads and extracts updated Ollama and AnythingLLM versions from `versions.env` without touching existing multi-gigabyte GGUF models or user chat databases.
+  - Implementation: `tools/update-engine.sh` / `.ps1`; `all` refreshes only installed components and preserves `ollama/data` + `anythingllm_data/`.
 
-- [ ] **LAN / Headless Server Mode (`--server` / `--lan`)**
+- [x] **LAN / Headless Server Mode (`--server` / `--lan`)**
   - Add optional `--server` flag to launchers to bind Ollama and AnythingLLM web interfaces to `0.0.0.0` or local network IP.
   - Enable other devices on the same Wi-Fi/local network (phones, tablets, laptops) to access the USB AI via browser.
   - Include QR code generation in terminal for instant mobile browser connection (`qrencode` / PowerShell ANSI QR).
+  - Implementation: `--server`/`--lan`/`--headless` flags, llama.cpp built-in web UI, mobile proxies (`tools/lan-chat.py` / `.ps1`), and bundled QR renderers (`tools/qr.py` / `.ps1`).
 
-- [ ] **Hardware Acceleration Auto-Tuning**
+- [x] **Hardware Acceleration Auto-Tuning**
   - Windows: Auto-detect NVIDIA CUDA compute capability and Intel/AMD Vulkan devices, configuring layer offloading (`--n-gpu-layers`).
   - Linux: Detect NVIDIA drivers (`nvidia-smi`), AMD ROCm, or fallback to optimized AVX2/AVX-512 CPU flags.
   - macOS: Auto-tune Unified Memory allocations for Apple Silicon M1–M4 chips.
+  - Implementation: `tools/hardware.ps1` / `hardware.sh`, consumed by all launchers; results saved to `installer_data/hardware.json`.
 
 ---
 
@@ -59,9 +63,6 @@ This document tracks upcoming architectural improvements, features, security har
 
 ## Phase 3: User Interface & Experience (UI/UX)
 
-- [ ] **Alternative Lightweight Web Frontend (Open WebUI / LibreChat)**
-  - Provide an optional lightweight portable web frontend (packaged via PyInstaller / Go / single binary) as an alternative to Electron-based AnythingLLM.
-  - Decreases disk footprint by 400MB+ and drops idle memory usage.
 
 - [ ] **Portable Desktop Shortcut Generator**
   - Add a utility script (`create-shortcut.bat` / `create-shortcut.sh`):

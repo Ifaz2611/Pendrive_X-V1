@@ -8,6 +8,7 @@ ollama/*.zip
 ollama/*.tgz
 ollama/*.tar.*
 ollama_mac/
+llamacpp/
 anythingllm/
 anythingllm_mac/
 anythingllm_data/

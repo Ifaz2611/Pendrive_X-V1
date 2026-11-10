@@ -25,32 +25,34 @@ echo -e "${CYAN}║${NC}  ${YELLOW}Multi-Model Edition | Linux Environment${NC} 
 echo -e "${CYAN}╚══════════════════════════════════════════════════════════╝${NC}"
 echo -e "\n${DGRAY}[INIT]${NC} Loading environment variables..."
 
-# ── CLI flags: --models 1,3 --custom-url https://... --custom-name mymodel --yes --help
+# ── CLI flags: --models 1,3 --custom-url https://... --custom-name mymodel
+#    --engine ollama|llamacpp|both  --update-engine[=all|ollama|anythingllm|llamacpp]  --yes
 CLI_MODELS="" CLI_CUSTOM_URL="" CLI_CUSTOM_NAME="" CLI_YES=false
-for arg in "$@"; do
-  case "$arg" in
-    --help|-h) echo "Usage: bash install-core.sh [USB_DIR] [--models 1,3|all] [--custom-url https://...gguf] [--custom-name mymodel-local] [--yes]"; exit 0 ;;
-    --models=*) CLI_MODELS="${arg#--models=}" ;;
-    --custom-url=*) CLI_CUSTOM_URL="${arg#--custom-url=}" ;;
-    --custom-name=*) CLI_CUSTOM_NAME="${arg#--custom-name=}" ;;
-    --yes) CLI_YES=true ;;
-  esac
-done
-# Also support separated form --models 1,3
-for (( i=1; i<=$#; i++ )); do
-  eval "arg=\${$i}"
-  case "$arg" in
-    --models) nxt=$((i+1)); eval "CLI_MODELS=\${$nxt:-}";;
-    --custom-url) nxt=$((i+1)); eval "CLI_CUSTOM_URL=\${$nxt:-}";;
-    --custom-name) nxt=$((i+1)); eval "CLI_CUSTOM_NAME=\${$nxt:-}";;
+CLI_ENGINE="" CLI_UPDATE="" CLI_USB=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --help|-h) echo "Usage: bash install-core.sh [USB_DIR] [--models 1,3|all] [--custom-url https://...gguf] [--custom-name mymodel-local]"; echo "       [--engine ollama|llamacpp|both] [--update-engine[=all|ollama|anythingllm|llamacpp]] [--yes]"; exit 0 ;;
+    --models=*) CLI_MODELS="${1#--models=}"; shift ;;
+    --models) CLI_MODELS="${2:-}"; shift 2 ;;
+    --custom-url=*) CLI_CUSTOM_URL="${1#--custom-url=}"; shift ;;
+    --custom-url) CLI_CUSTOM_URL="${2:-}"; shift 2 ;;
+    --custom-name=*) CLI_CUSTOM_NAME="${1#--custom-name=}"; shift ;;
+    --custom-name) CLI_CUSTOM_NAME="${2:-}"; shift 2 ;;
+    --engine=*) CLI_ENGINE="${1#--engine=}"; shift ;;
+    --engine) CLI_ENGINE="${2:-}"; shift 2 ;;
+    --update-engine) CLI_UPDATE="all"; shift ;;
+    --update-engine=*) CLI_UPDATE="${1#--update-engine=}"; shift ;;
+    --update) CLI_UPDATE="all"; shift ;;
+    --yes|-y) CLI_YES=true; shift ;;
+    *) if [[ -d "$1" && "$1" != --* ]]; then CLI_USB="$1"; fi; shift ;;
   esac
 done
 
-# USB root = first directory argument if provided, otherwise the folder containing this script
+# USB root = directory argument if provided, otherwise the folder containing this script
 USB_DIR=""
-for a in "$@"; do
-  if [[ -d "$a" && "$a" != --* ]]; then USB_DIR="$(cd "$a" && pwd)"; break; fi
-done
+if [[ -n "$CLI_USB" ]]; then
+    USB_DIR="$(cd "$CLI_USB" && pwd)"
+fi
 if [[ -z "$USB_DIR" ]]; then
     USB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 fi
@@ -98,6 +100,70 @@ for cmd in curl tar zstd; do
     fi
 done
 echo -e "${GREEN}→ All dependencies verified successfully.${NC}"
+
+# ── Portable runtime config (.env on USB root)
+if [[ ! -f "$USB_DIR/.env" && -f "$USB_DIR/.env.example" ]]; then
+    cp "$USB_DIR/.env.example" "$USB_DIR/.env" 2>/dev/null || true
+    echo -e "${GREEN}[✓]${NC} Created runtime config: ${CYAN}$USB_DIR/.env${NC}"
+fi
+if [[ ! -f "$USB_DIR/.env" ]]; then
+    cat > "$USB_DIR/.env" <<'ENVEOF'
+INFERENCE_ENGINE=ollama
+AUTO_TUNE=1
+SERVER_MODE=0
+OLLAMA_PORT=0
+LLAMACPP_PORT=0
+LAN_CHAT_PORT=8090
+LLAMACPP_MODEL=
+LLAMACPP_NGL=auto
+LLAMACPP_THREADS=auto
+LLAMACPP_CTX=auto
+LLAMACPP_VARIANT=auto
+OLLAMA_KEEP_ALIVE=30m
+ENVEOF
+    echo -e "${GREEN}[✓]${NC} Created runtime config: ${CYAN}$USB_DIR/.env${NC}"
+fi
+
+set_env_key() {
+    local file="$1" key="$2" value="$3" tmp
+    tmp="${file}.tmp"
+    awk -v k="$key" -v v="$value" '
+        BEGIN { done=0 }
+        $0 ~ "^[[:space:]]*" k "[[:space:]]*=" { print k "=" v; done=1; next }
+        { print }
+        END { if (!done) print k "=" v }
+    ' "$file" > "$tmp" 2>/dev/null && mv "$tmp" "$file" || rm -f "$tmp"
+}
+
+CONFIGURED_ENGINE=$(grep -E '^INFERENCE_ENGINE=' "$USB_DIR/.env" 2>/dev/null | tail -1 | cut -d= -f2 | tr -d '[:space:]\r' || true)
+SELECTED_ENGINE="${CLI_ENGINE:-${CONFIGURED_ENGINE:-ollama}}"
+SELECTED_ENGINE=$(printf '%s' "$SELECTED_ENGINE" | tr '[:upper:]' '[:lower:]')
+case "$SELECTED_ENGINE" in
+    ollama) INSTALL_OLLAMA=true; INSTALL_LLAMACPP=false; ACTIVE_ENGINE="ollama" ;;
+    llamacpp|llama.cpp|llama-cpp) INSTALL_OLLAMA=false; INSTALL_LLAMACPP=true; ACTIVE_ENGINE="llamacpp" ;;
+    both) INSTALL_OLLAMA=true; INSTALL_LLAMACPP=true; ACTIVE_ENGINE="llamacpp" ;;
+    *) SELECTED_ENGINE="ollama"; INSTALL_OLLAMA=true; INSTALL_LLAMACPP=false; ACTIVE_ENGINE="ollama" ;;
+esac
+set_env_key "$USB_DIR/.env" "INFERENCE_ENGINE" "$ACTIVE_ENGINE"
+echo -e "${DGRAY}[CFG]${NC} Inference engine: ${CYAN}${SELECTED_ENGINE}${NC}"
+
+# Shared helpers for AnythingLLM config + hardware profile.
+# shellcheck source=../tools/common.sh
+if [[ -f "$USB_DIR/tools/common.sh" ]]; then
+    source "$USB_DIR/tools/common.sh"
+    px_load_config "$USB_DIR"
+fi
+
+# ── In-place engine/UI update (models and chats preserved)
+if [[ -n "$CLI_UPDATE" ]]; then
+    echo ""
+    echo -e "${CYAN}Updating engines/UI (models and chats preserved)...${NC}"
+    [[ "$CLI_UPDATE" == "both" ]] && CLI_UPDATE="all"
+    UPDATE_ARGS=("$USB_DIR" linux --engine "$CLI_UPDATE")
+    [[ "$CLI_YES" == "true" ]] && UPDATE_ARGS+=(--yes)
+    bash "$USB_DIR/tools/update-engine.sh" "${UPDATE_ARGS[@]}"
+    exit $?
+fi
 
 # ── Error tracker ─────────────────────────────────────────────
 DOWNLOAD_ERRORS=()
@@ -587,11 +653,13 @@ EOF
 echo -e "${DGRAY}      Saved model list to installed-models.txt${NC}"
 
 # ================================================================
-# STEP 5 — Download Ollama (Linux binary)
+# STEP 5 — Download the inference engine (Ollama and/or llama.cpp)
 # ================================================================
 echo ""
-echo -e "${YELLOW}[5/6] Downloading Ollama AI Engine (Linux)...${NC}"
+echo -e "${YELLOW}[5/6] Downloading AI Engine(s)...${NC}"
 
+if $INSTALL_OLLAMA; then
+echo -e "${DGRAY}      Ollama:${NC}"
 OLLAMA_BIN="$USB_DIR/ollama/ollama"
 # Prefer pinned version from versions.env if available
 OLLAMA_URL="${OLLAMA_LINUX_URL:-https://ollama.com/download/ollama-linux-amd64.tar.zst}"
@@ -643,6 +711,19 @@ else
         DOWNLOAD_ERRORS+=("Ollama Engine")
     fi
 fi
+else
+    echo -e "${DGRAY}      Ollama: skipped (llama.cpp engine selected)${NC}"
+fi
+
+if $INSTALL_LLAMACPP; then
+    LLAMA_VARIANT=$(grep -E '^LLAMACPP_VARIANT=' "$USB_DIR/.env" 2>/dev/null | tail -1 | cut -d= -f2 | tr -d '[:space:]\r' || true)
+    [[ -z "$LLAMA_VARIANT" ]] && LLAMA_VARIANT="auto"
+    echo -e "${DGRAY}      llama.cpp (${LLAMA_VARIANT}):${NC}"
+    if ! bash "$USB_DIR/tools/install-llamacpp.sh" "$USB_DIR" "$LLAMA_VARIANT"; then
+        echo -e "${RED}      ERROR: llama.cpp setup failed.${NC}"
+        DOWNLOAD_ERRORS+=("llama.cpp Engine")
+    fi
+fi
 
 # ================================================================
 # STEP 6 — Download AnythingLLM (Linux AppImage)
@@ -675,9 +756,11 @@ fi
 # IMPORT MODELS INTO OLLAMA ENGINE
 # ================================================================
 echo ""
-echo -e "${YELLOW}Importing AI models into the Ollama engine...${NC}"
+echo -e "${YELLOW}Preparing AI models...${NC}"
 
-if [[ ! -x "$OLLAMA_BIN" ]]; then
+if ! $INSTALL_OLLAMA; then
+    echo -e "${DGRAY}      Skipping Ollama import - llama.cpp reads models/*.gguf directly.${NC}"
+elif [[ ! -x "$OLLAMA_BIN" ]]; then
     echo -e "${RED}      ERROR: Ollama not found! Cannot import models.${NC}"
 else
     export OLLAMA_MODELS="$USB_DIR/ollama/data"
@@ -765,49 +848,66 @@ echo -e "${YELLOW}Configuring AnythingLLM to use your models...${NC}"
 
 STORAGE_DIR="$USB_DIR/anythingllm_data/storage"
 mkdir -p "$STORAGE_DIR"
-ENV_FILE="$STORAGE_DIR/.env"
 FIRST_LOCAL="${SEL_LOCALS[0]}"
 
-if [[ ! -f "$ENV_FILE" ]]; then
-    cat > "$ENV_FILE" <<EOF
+CFG_PORT="11434"
+if [[ "$ACTIVE_ENGINE" == "llamacpp" ]]; then
+    CFG_PORT=$(grep -E '^LLAMACPP_PORT=' "$USB_DIR/.env" 2>/dev/null | tail -1 | cut -d= -f2 | tr -d '[:space:]\r' || true)
+    if [[ -z "$CFG_PORT" || "$CFG_PORT" == "0" ]]; then CFG_PORT="8081"; fi
+fi
+
+if declare -F px_config_anythingllm >/dev/null 2>&1; then
+    TOKEN_LIMIT=$(px_config_anythingllm "$USB_DIR" "$ACTIVE_ENGINE" "127.0.0.1" "$CFG_PORT" "$FIRST_LOCAL")
+else
+    ENV_FILE="$STORAGE_DIR/.env"
+    if [[ "$ACTIVE_ENGINE" == "llamacpp" ]]; then
+        cat > "$ENV_FILE" <<EOF
+LLM_PROVIDER=generic-openai
+GENERIC_OPEN_AI_BASE_PATH=http://127.0.0.1:${CFG_PORT}/v1
+GENERIC_OPEN_AI_MODEL_PREF=${FIRST_LOCAL}
+GENERIC_OPEN_AI_MODEL_TOKEN_LIMIT=4096
+GENERIC_OPEN_AI_MAX_TOKENS=4096
+GENERIC_OPEN_AI_API_KEY=sk-no-key
+EMBEDDING_ENGINE=native
+VECTOR_DB=lancedb
+EOF
+    else
+        cat > "$ENV_FILE" <<EOF
 LLM_PROVIDER=ollama
-OLLAMA_BASE_PATH=http://127.0.0.1:11434
+OLLAMA_BASE_PATH=http://127.0.0.1:${CFG_PORT}
 OLLAMA_MODEL_PREF=${FIRST_LOCAL}
 OLLAMA_MODEL_TOKEN_LIMIT=4096
 EMBEDDING_ENGINE=native
 VECTOR_DB=lancedb
 EOF
-    echo -e "${GREEN}      AnythingLLM configured to use: ${FIRST_LOCAL}${NC}"
-elif grep -q "LLM_PROVIDER=ollama" "$ENV_FILE"; then
-    echo -e "${GREEN}      AnythingLLM already configured for Ollama — preserving token limit.${NC}"
-    # Preserve custom token limit, only patch missing keys
-    if ! grep -q "OLLAMA_MODEL_TOKEN_LIMIT=" "$ENV_FILE"; then
-        echo "OLLAMA_MODEL_TOKEN_LIMIT=4096" >> "$ENV_FILE"
-    else
-        TOK=$(grep -E "^OLLAMA_MODEL_TOKEN_LIMIT=" "$ENV_FILE" | cut -d= -f2 | tr -d '[:space:]' || echo 4096)
-        echo -e "${DGRAY}      Preserved token limit: $TOK${NC}"
     fi
-    if ! grep -q "OLLAMA_MODEL_PREF=" "$ENV_FILE"; then
-        echo "OLLAMA_MODEL_PREF=${FIRST_LOCAL}" >> "$ENV_FILE"
-    fi
-else
-    # Preserve token limit even when migrating
-    TOK="4096"
-    if grep -q "OLLAMA_MODEL_TOKEN_LIMIT=" "$ENV_FILE"; then
-        TOK=$(grep -E "^OLLAMA_MODEL_TOKEN_LIMIT=" "$ENV_FILE" | cut -d= -f2 | tr -d '[:space:]' || echo 4096)
-    fi
-    cat > "$ENV_FILE" <<EOF
-LLM_PROVIDER=ollama
-OLLAMA_BASE_PATH=http://127.0.0.1:11434
-OLLAMA_MODEL_PREF=${FIRST_LOCAL}
-OLLAMA_MODEL_TOKEN_LIMIT=$TOK
-EMBEDDING_ENGINE=native
-VECTOR_DB=lancedb
-EOF
-    echo -e "${GREEN}      AnythingLLM reconfigured to use external Ollama (preserved token_limit=$TOK).${NC}"
+    TOKEN_LIMIT="4096"
 fi
+[[ -z "${TOKEN_LIMIT:-}" ]] && TOKEN_LIMIT="4096"
+echo -e "${GREEN}      AnythingLLM configured: ${ACTIVE_ENGINE} @ ${CFG_PORT} (token_limit=${TOKEN_LIMIT})${NC}"
 echo -e "${DGRAY}      Default model: ${FIRST_LOCAL}${NC}"
 echo -e "${DGRAY}      Log: $LOG_FILE${NC}"
+
+# ================================================================
+# HARDWARE PROFILE (used by launchers for acceleration auto-tuning)
+# ================================================================
+echo ""
+echo -e "${YELLOW}Detecting hardware acceleration...${NC}"
+HW_SCRIPT="$USB_DIR/tools/hardware.sh"
+if [[ -f "$HW_SCRIPT" ]]; then
+    HW_JSON=$(bash "$HW_SCRIPT" --model "$USB_DIR/models/${SEL_FILES[0]}" --json 2>/dev/null || true)
+    if [[ -n "$HW_JSON" ]]; then
+        printf '%s\n' "$HW_JSON" > "$USB_DIR/installer_data/hardware.json" 2>/dev/null || true
+        HW_NOTE=$(printf '%s\n' "$HW_JSON" | sed -n 's/.*"PENDRIVE_ACCEL_NOTE":"\([^"]*\)".*/\1/p')
+        HW_LAYERS=$(printf '%s\n' "$HW_JSON" | sed -n 's/.*"PENDRIVE_NGL":\([0-9]*\).*/\1/p')
+        HW_THREADS=$(printf '%s\n' "$HW_JSON" | sed -n 's/.*"PENDRIVE_THREADS":\([0-9]*\).*/\1/p')
+        HW_CTX=$(printf '%s\n' "$HW_JSON" | sed -n 's/.*"PENDRIVE_CTX":\([0-9]*\).*/\1/p')
+        [[ -n "$HW_NOTE" ]] && echo -e "${GREEN}      Acceleration: ${HW_NOTE}${NC}"
+        echo -e "${DGRAY}      layers=${HW_LAYERS} threads=${HW_THREADS} ctx=${HW_CTX}${NC}"
+    fi
+else
+    echo -e "${DGRAY}      tools/hardware.sh not found - launcher will use safe defaults.${NC}"
+fi
 
 # ================================================================
 # FINAL SUMMARY
@@ -845,7 +945,9 @@ for (( i=0; i<SEL_COUNT; i++ )); do
 done
 
 echo ""
-echo -e "${NC}  To start your AI:  ${YELLOW}bash start-linux.sh${NC}"
+echo -e "${NC}  Inference engine: ${CYAN}${ACTIVE_ENGINE}${NC}"
+echo -e "${NC}  To start your AI:  ${YELLOW}bash linux/start-linux.sh${NC}"
+echo -e "${NC}  LAN / phone mode:  ${YELLOW}bash linux/start-linux.sh --server${NC}"
 echo ""
 echo -e "${DGRAY}  TIP: In AnythingLLM, go to Settings > LLM to switch"
 echo -e "  between your installed models.${NC}"

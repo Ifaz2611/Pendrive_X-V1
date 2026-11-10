@@ -12,16 +12,16 @@
 - [Available Models](#available-models)
 - [System Requirements](#system-requirements)
 - [Quick Start](#quick-start)
+- [Inference Engines & `.env`](#inference-engines--env)
 - [Detailed Setup](#detailed-setup)
 - [How to Run](#how-to-run)
+- [LAN / Phone Mode](#lan--phone-mode)
+- [Updating Engines & UI](#updating-engines--ui)
 - [USB Drive Layout](#usb-drive-layout)
 - [Switching Models](#switching-models)
 - [Token Limit / Context Size](#token-limit--context-size)
 - [Privacy & Portability](#privacy--portability)
 - [Troubleshooting](#troubleshooting)
-- [Bugs Fixed in this Revision](#bugs-fixed-in-this-revision)
-- [Project Structure](#project-structure)
-- [Contributing](#contributing)
 - [License](#license)
 
 ---
@@ -32,9 +32,13 @@
 - **Zero host footprint** — no registry keys, no `AppData` leftovers, no admin required.
 - **Cross-platform** — native launchers for Windows (`.bat`), macOS (`.command`), and Linux (`.sh`).
 - **Multi-model** — install 1–6 presets or bring any HuggingFace `GGUF` URL.
+- **Dual inference engine** — choose **Ollama** or **standalone llama.cpp** (`llama-server`) in `.env`. llama.cpp skips Ollama's background service and saves ~1.5–2 GB RAM.
+- **Hardware auto-tuning** — detects NVIDIA CUDA, AMD ROCm, Intel/AMD Vulkan, Apple Metal, and AVX2/AVX-512 CPUs, then picks layer offload, threads, and context size.
+- **LAN / phone mode** — `--server` binds the engine to the LAN and prints a terminal QR code so a phone or tablet can connect over Wi-Fi.
+- **In-place engine updater** — `--update-engine` refreshes engines and the UI from `versions.env` without touching GGUF models or chat databases.
 - **Idempotent installer** — re-run to add models; already-downloaded files are skipped.
-- **Safe shutdown** — PID-tracked Ollama + AnythingLLM, no orphan processes on the host.
-- **Health checks** — launchers poll `http://127.0.0.1:<port>/api/tags` instead of blind `sleep`.
+- **Safe shutdown** — PID-tracked engine + AnythingLLM, no orphan processes on the host.
+- **Health checks** — launchers poll the engine's health endpoint instead of blind `sleep`.
 
 ---
 
@@ -112,18 +116,78 @@ bash linux/install-core.sh /media/$USER/MYUSB
 bash linux/start-linux.sh
 ```
 
+Non-interactive install examples:
+
+```bash
+# Ollama, models 1 and 3
+bash linux/install-core.sh /media/$USER/MYUSB --engine ollama --models 1,3 --yes
+
+# llama.cpp only, recommended 12B model
+bash linux/install-core.sh /media/$USER/MYUSB --engine llamacpp --models 1 --yes
+```
+
+On Windows the same flags work through `install.bat`:
+
+```bat
+install.bat --engine=llamacpp --models 1 --yes
+install.bat --update-engine
+install.bat --update-engine=anythingllm
+```
+
+---
+
+## Inference Engines & `.env`
+
+Every launcher reads `<USB>/.env` (created from `.env.example` on first install).
+Change a value there and relaunch; no reinstall is needed.
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `INFERENCE_ENGINE` | `ollama` | `ollama` or `llamacpp` (`llama-server`) |
+| `AUTO_TUNE` | `1` | Detect GPU/CPU and tune layer offload, threads, context |
+| `SERVER_MODE` | `0` | `1` binds to `0.0.0.0` (same as `--server` for one session) |
+| `OLLAMA_PORT` / `LLAMACPP_PORT` | `0` | `0` = pick a free port automatically |
+| `LAN_CHAT_PORT` | `8090` | Mobile chat page used by the Ollama LAN proxy |
+| `LLAMACPP_MODEL` | empty | Model alias or `.gguf` filename; empty = first installed |
+| `LLAMACPP_NGL` / `LLAMACPP_THREADS` / `LLAMACPP_CTX` | `auto` | Manual tuning overrides |
+| `LLAMACPP_VARIANT` | `auto` | `auto`, `cuda`, `rocm`, `vulkan`, or `cpu` build |
+| `LLAMACPP_EXTRA_ARGS` | empty | Extra `llama-server` flags, e.g. `--flash-attn --no-mmap` |
+| `OLLAMA_KEEP_ALIVE` / `OLLAMA_NUM_PARALLEL` | `30m` / `1` | Ollama runtime tuning |
+
+Command-line overrides:
+
+```bat
+start-windows.bat --engine=llamacpp --model=qwen-local
+start-windows.bat --server
+start-windows.bat --server --headless
+```
+
+```bash
+bash linux/start-linux.sh --engine=llamacpp --model=qwen-local
+bash linux/start-linux.sh --server
+```
+
+- **Ollama mode** keeps the existing AnythingLLM `LLM_PROVIDER=ollama` setup.
+- **llama.cpp mode** configures AnythingLLM with `LLM_PROVIDER=generic-openai`,
+  `GENERIC_OPEN_AI_BASE_PATH=http://127.0.0.1:<port>/v1`, and the dummy key
+  `sk-no-key`. `llama-server` reads GGUF files directly from `models/`, so no
+  Ollama import step is required.
+- Engine binaries live in `llamacpp/` and are downloaded from pinned URLs in
+  `versions.env`; the installer picks CUDA/Vulkan/ROCm/CPU/Metal automatically.
+
 ---
 
 ## Detailed Setup
 
-### What the installer does (6 steps)
+### What the installer does (6 numbered steps, plus hardware profile)
 
 1. **Model selection** — interactive menu, supports `1,3`, `all`, `c`/`custom`, and mixes like `1,3,c`.
-2. **Folder creation** — `models/`, `ollama/`, `anythingllm/`, `anythingllm_data/`, `installer_data/`.
+2. **Folder creation** — `models/`, `ollama/`, `llamacpp/`, `anythingllm/`, `anythingllm_data/`, `installer_data/`, plus `.env`.
 3. **Model downloads** — `curl` with `--retry 2` to temp `.part` files, verified by minimum byte size before `mv`.
 4. **Modelfiles** — generates `models/Modelfile-<localName>` per model + legacy `models/Modelfile` + `installed-models.txt`.
-5. **Ollama engine** — Windows ZIP / Linux `tar.zst` / macOS `darwin.zip`, extracted to `ollama/` (Windows/Linux) or `ollama_mac/` (macOS).
-6. **AnythingLLM UI** — Windows: prompts manual install to USB; Linux: AppImage; macOS: DMG extracted to `anythingllm_mac/`.
+5. **Inference engine** — installs Ollama (`ollama/` or `ollama_mac/`) and/or portable `llama-server` in `llamacpp/` for the selected `--engine`. llama.cpp URLs are pinned in `versions.env`.
+6. **AnythingLLM UI** — Windows: prompts manual install to USB; Linux: AppImage; macOS: DMG extracted to `anythingllm_mac/`. The LLM provider is configured for the selected engine.
+7. **Hardware profile** — detection results are saved to `installer_data/hardware.json`; launchers re-detect on every start.
 
 Re-running the installer **never re-downloads** valid files (`file_is_valid` / `Test-DownloadedFile` checks). Use it to add models later.
 
@@ -146,23 +210,81 @@ Pick `C` at the menu, paste a direct `.gguf` URL, give a short name (auto-suffix
 
 ### Windows (`start-windows.bat`)
 
+- Reads `<USB>\.env`, applies `--engine`, `--model`, `--server`, and `--update-engine` overrides.
+- Detects hardware through `tools\hardware.ps1` and starts the engine through `tools\start-engine.ps1` (Ollama `serve` or `llama-server` with CUDA/Vulkan tuning).
 - Clears **only** `anythingllm-desktop/GPUCache|Cache|Code Cache|ShaderCache` (never `config.json`).
-- Captures Ollama PID via PowerShell `Start-Process -PassThru`, polls `http://127.0.0.1:11434/api/tags` for 30 s, stores PID in `anythingllm_data/.session_pids`.
+- Captures the engine PID, polls `/health` (llama.cpp) or `/api/tags` (Ollama), stores PIDs in `anythingllm_data\.session_pids`.
+- Rewrites only the LLM keys in `anythingllm_data\storage\.env` and preserves a custom token limit.
 - Launches `AnythingLLM.exe --user-data-dir="%USB%\anythingllm_data"`.
-- **Keep the black terminal open.** Press any key to shut down — kills only the USB's Ollama PID (+ path-verified fallback), never a host Ollama.
+- **Keep the black terminal open.** Press any key to shut down — kills only PIDs from this USB, never a host Ollama.
 
-Alternative hardened launcher: **`optimiced.bat`** (Spanish UI) — dynamic port, `Get-CimInstance` (not deprecated `Get-WmiObject`), disk-space guard, priority `AboveNormal`, preserved token limit.
+Alternative hardened launcher: **`optimiced.bat`** (Spanish UI, Ollama-focused).
 
 ### macOS (`start-mac.command`)
 
-- First run: downloads `ollama-darwin.zip` → `ollama_mac/`, and `AnythingLLMDesktop-Silicon.dmg` → `anythingllm_mac/AnythingLLM.app` via `hdiutil attach` (robust `/dev/diskN` parsing).
-- Finds a free port 11434–11534 via `nc -z` / `lsof` / Python socket fallback (not `/dev/tcp`, which is absent on macOS).
-- Sets `OLLAMA_MODELS`, `XDG_*_HOME` to USB paths. Polls API, clears hardware caches, launches `Contents/MacOS/AnythingLLM --user-data-dir=...` (or `open -a` fallback).
-- `trap cleanup` on EXIT/INT/TERM/HUP; `xargs -r` safe.
+- First run: downloads the selected engine (Ollama `ollama-darwin.zip` or llama.cpp Metal) to `ollama_mac/` / `llamacpp/`, and `AnythingLLMDesktop-Silicon.dmg` → `anythingllm_mac/AnythingLLM.app` via `hdiutil attach`.
+- Uses Apple Silicon unified memory for auto-tuning (`-ngl 999`, context scaled to RAM).
+- Finds a free port via `nc -z` / `lsof` / Python socket fallback (not `/dev/tcp`, which is absent on macOS).
+- Sets `OLLAMA_MODELS`, `XDG_*_HOME` to USB paths, polls the engine health endpoint, clears hardware caches, launches `Contents/MacOS/AnythingLLM --user-data-dir=...`.
+- `trap cleanup` on EXIT/INT/TERM/HUP.
 
 ### Linux (`linux/start-linux.sh`)
 
-- Mirrors the macOS pattern: `OLLAMA_MODELS`, `XDG_*`, free-port scan, 30 s health poll, AppImage launch with `FUSE` detection + `APPIMAGE_EXTRACT_AND_RUN` fallback, `renice -n -1`.
+- Mirrors the macOS pattern with `tools/common.sh`: `.env` loading, engine selection, hardware auto-tuning (CUDA/ROCm/Vulkan/AVX2/AVX-512), free-port scan, health poll.
+- AppImage launch with `FUSE` detection + `APPIMAGE_EXTRACT_AND_RUN` fallback, `renice -n -1`.
+- llama.cpp uses the standalone `llamacpp/llama-server` binary; no Ollama background service is started.
+
+---
+
+## LAN / Phone Mode
+
+Use `--server`, `--lan`, or `--headless` to bind the engine to `0.0.0.0` and
+reach it from another device on the same Wi-Fi:
+
+```bat
+start-windows.bat --server
+start-windows.bat --headless        :: no desktop UI
+start-windows.bat --server --with-ui
+```
+
+```bash
+bash linux/start-linux.sh --server
+./start-mac.command --lan
+```
+
+- **llama.cpp** serves its built-in web UI at `http://<LAN-IP>:<port>/`.
+- **Ollama** starts a lightweight mobile chat page (`tools/lan-chat.py` /
+  `tools/lan-chat.ps1`) on `LAN_CHAT_PORT` because Ollama itself has no web UI.
+- The terminal prints the LAN URL and a QR code (via `qrencode` when available,
+  otherwise the bundled Python/PowerShell renderer). Scan it with a phone camera.
+- LAN mode exposes the engine to your local network only. Do not use it on
+  untrusted Wi-Fi; there is no authentication layer.
+
+---
+
+## Updating Engines & UI
+
+`--update-engine` refreshes only the installed engine binaries and AnythingLLM.
+Models, `ollama/data`, and `anythingllm_data/` (chats and settings) are never
+modified.
+
+```bat
+install.bat --update-engine
+install.bat --update-engine=ollama
+install.bat --update-engine=anythingllm
+install.bat --update-engine=llamacpp
+start-windows.bat --update-engine
+```
+
+```bash
+bash linux/install-core.sh /path/to/usb --update-engine
+bash linux/start-linux.sh --update-engine=llamacpp
+./start-mac.command --update-engine=all
+```
+
+Bump the pinned versions in `versions.env` to choose what "latest" means for
+your drive. `all` skips components that are not installed, so a llama.cpp-only
+USB does not download Ollama.
 
 ---
 
@@ -172,32 +294,45 @@ Alternative hardened launcher: **`optimiced.bat`** (Spanish UI) — dynamic port
 
 ```
 E:\
+├── .env                        ← runtime config (engine, ports, tuning)
+├── .env.example                ← documented defaults
 ├── install.bat                 ← Windows installer entry
 ├── install-core.ps1            ← Core logic (called by install.bat)
 ├── start-windows.bat           ← Main Windows launcher
-├── optimiced.bat               ← Hardened alt launcher (dynamic port, PID tracking)
+├── optimiced.bat               ← Hardened alt launcher (Ollama-focused)
 ├── start-mac.command           ← macOS launcher (works from same USB)
+├── versions.env                ← pinned Ollama / AnythingLLM / llama.cpp
+├── tools/                      ← shared helpers (hardware, QR, updater, LAN chat)
+│   ├── common.sh               ← shared macOS/Linux helpers
+│   ├── hardware.sh / .ps1      ← acceleration auto-tuning
+│   ├── install-llamacpp.sh/.ps1
+│   ├── update-engine.sh/.ps1
+│   ├── start-engine.ps1
+│   ├── config-anythingllm.ps1
+│   ├── lan-chat.py / .ps1
+│   └── qr.py / qr.ps1
 ├── linux/                      ← Linux scripts (also usable from Windows USB)
 │   ├── install.sh
 │   ├── install-core.sh
 │   ├── preflight-check.sh
 │   └── start-linux.sh
-├── ollama/                     ← Windows/Linux engine
+├── ollama/                     ← Windows/Linux Ollama engine
 │   ├── ollama.exe (or ollama)
 │   └── data/                   ← Ollama model storage (OLLAMA_MODELS)
-├── ollama_mac/                 ← macOS engine (ollama binary / Ollama.app)
+├── ollama_mac/                 ← macOS Ollama engine
+├── llamacpp/                   ← portable llama-server + DLLs/libraries
 ├── models/
 │   ├── *.gguf                  ← Model weights
-│   ├── Modelfile-<localName>   ← Per-model Ollama configs
+│   ├── Modelfile-<localName>   ← Per-model configs
 │   ├── Modelfile               ← Legacy alias → first model
 │   └── installed-models.txt    ← "local|Display Name|LABEL" per line
 ├── anythingllm/                ← Windows AnythingLLM install
 ├── anythingllm_mac/            ← macOS AnythingLLM.app
 ├── anythingllm_data/           ← ALL chats, settings, caches (portable!)
-│   ├── storage/.env            ← LLM_PROVIDER, OLLAMA_BASE_PATH, MODEL_PREF
+│   ├── storage/.env            ← LLM provider + model settings
 │   ├── config/  data/  cache/  ← XDG dirs (Linux/macOS)
 │   └── anythingllm-desktop/    ← Electron profile + GPU caches
-└── installer_data/             ← Temp installer files (auto-cleaned)
+└── installer_data/             ← Temp files, logs, hardware.json (auto-cleaned)
 ```
 
 **Linux/macOS** paths are identical except `ollama_mac/` and `anythingllm_mac/` are used instead of `ollama/` + `anythingllm/`.
@@ -206,9 +341,10 @@ E:\
 
 ## Switching Models
 
-In AnythingLLM: **Settings → LLM Provider → Ollama → Model** — pick any `*-local` name listed in `models/installed-models.txt`.
+- **Ollama:** AnythingLLM → **Settings → LLM Provider → Ollama → Model** — pick any `*-local` alias from `models/installed-models.txt`, or override the default with `--model=<alias>`.
+- **llama.cpp:** set `LLAMACPP_MODEL=<alias or file.gguf>` in `.env`, or launch with `--model=qwen-local`. AnythingLLM's model preference is updated automatically to the selected alias.
 
-The `.env` default (`OLLAMA_MODEL_PREF`) is set to the first model you installed; changing it in the UI persists across restarts.
+The first installed model is used when no explicit selection is made. UI changes persist across restarts.
 
 ---
 
@@ -219,9 +355,12 @@ Default is `4096` tokens (good for 6–8 GB RAM). To increase:
 1. Close the launcher.
 2. Open `anythingllm_data/storage/.env` on the USB in a text editor.
 3. Change `OLLAMA_MODEL_TOKEN_LIMIT=4096` → e.g. `8192` or `16384`.
+   In llama.cpp mode the equivalent keys are
+   `GENERIC_OPEN_AI_MODEL_TOKEN_LIMIT` and `GENERIC_OPEN_AI_MAX_TOKENS`.
 4. Save and relaunch via `start-windows.bat` / `start-mac.command` / `linux/start-linux.sh`.
 
-> **Preservation fix (this revision):** launchers now **preserve** a custom `OLLAMA_MODEL_TOKEN_LIMIT` instead of blindly overwriting it on every start. The installer also non-destructively patches `.env` if it already contains `LLM_PROVIDER=ollama`.
+> **Preservation fix:** launchers now **preserve** a custom token limit instead
+> of blindly overwriting it on every start, and only rewrite the LLM provider keys.
 
 Re-running the *installer* (`install.bat` / `install-core.sh`) will still honor the existing `.env` if it already points at `ollama`; delete `.env` to force a reset.
 
@@ -231,8 +370,9 @@ Re-running the *installer* (`install.bat` / `install-core.sh`) will still honor 
 
 - `STORAGE_DIR`, `APPDATA`, `LOCALAPPDATA`, `XDG_*` all point at `anythingllm_data/` on the USB.
 - Electron is launched with `--user-data-dir=<USB>\anythingllm_data` — nothing under `%APPDATA%` or `~/Library/Application Support` on the host.
-- `ollama/data` lives on the USB (`OLLAMA_MODELS`).
+- `ollama/data` lives on the USB (`OLLAMA_MODELS`); llama.cpp reads `models/*.gguf` directly.
 - Moving between PCs: hardware caches (`GPUCache`, `ShaderCache`, etc.) are wiped on launch to avoid `ENOENT` / GPU mismatch errors. Your chats and model settings stay intact.
+- LAN/phone mode is opt-in. When enabled, the engine and chat page listen on all interfaces; there is no built-in authentication, so only use it on a trusted network.
 - **Always eject safely** after the shutdown message appears.
 
 ---
@@ -246,6 +386,10 @@ Re-running the *installer* (`install.bat` / `install-core.sh`) will still honor 
 | `File seems too small (… MB)` then `ERROR: Download failed` | Partial download — check free space, retry, or manual download to `models/`. |
 | `AnythingLLM.exe not found` | Re-run `install.bat` and when prompted, **Browse → `E:\anythingllm`** (not `C:\Program Files`). |
 | `Ollama failed to start on port …` / `Timeout` | Host Ollama already on 11434; launcher tries 11434–11534 but may collide if all busy. Close host Ollama or reboot. Check firewall. |
+| `llama-server was not found` | Run `install.bat --engine=llamacpp` (or `--update-engine=llamacpp`) once with internet. |
+| llama.cpp exits immediately / GPU error | Set `LLAMACPP_VARIANT=cpu` in `.env`, then `--update-engine=llamacpp`, or update your GPU driver. |
+| Phone cannot open the LAN URL | Confirm both devices are on the same Wi-Fi, allow the port through the host firewall, and avoid guest/AP-isolated networks. |
+| No QR code in terminal | Install `qrencode`, or keep Python 3 available — the bundled `tools/qr.py` / `tools/qr.ps1` renderer is used otherwise. The URL is always printed. |
 | `JavaScript error ENOENT` on new PC | Fixed in this revision — launcher wipes only GPU/Shader caches. Re-run `start-windows.bat`. |
 | `FUSE launch failed` on Linux | AppImage fallback is automatic (`APPIMAGE_EXTRACT_AND_RUN=1`). Install `fuse3` / `libfuse2` for native speed, or keep extract-and-run. |
 | `xargs: kill: No such process` on macOS exit | Fixed — now uses `xargs -r`. |

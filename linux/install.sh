@@ -17,23 +17,44 @@ echo "to install from a curated list."
 echo ""
 echo "  - 6 preset models (uncensored + standard)"
 echo "  - Custom model support (bring your own GGUF)"
+echo "  - Dual engine: Ollama or llama.cpp"
 echo "  - Minimum USB space: 16 GB (32 GB recommended)"
+echo ""
+echo "  Flags: --engine ollama|llamacpp|both"
+echo "         --models 1,3     --yes"
+echo "         --update-engine  (refresh engines/UI)"
 echo ""
 echo "Make sure you have a good internet connection!"
 echo ""
-echo -e "${YELLOW}Press Enter to continue (Ctrl+C to cancel)...${NC}"
-read -r
+# Interactive pause unless the caller asked for a non-interactive run.
+case " $* " in
+    *" --yes "*|*" -y "*|*" --update-engine"*|*" --update-engine="*|*" --update "*)
+        ;;
+    *)
+        echo -e "${YELLOW}Press Enter to continue (Ctrl+C to cancel)...${NC}"
+        read -r
+        ;;
+esac
 
-# Run the preflight check first to ensure we target the correct USB drive
+# Run the preflight check first to ensure we target the correct USB drive.
+# Explicit engine/update flags bypass the interactive preflight.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -f "$SCRIPT_DIR/preflight-check.sh" ]]; then
-    bash "$SCRIPT_DIR/preflight-check.sh" "$@"
-    EXIT_CODE=$?
-else
-    # Fallback if preflight is missing
-    bash "$SCRIPT_DIR/install-core.sh" "$@"
-    EXIT_CODE=$?
-fi
+case " $* " in
+    *" --update-engine"*|*" --update-engine="*|*" --engine "*|*" --engine="*|*" --yes "*)
+        bash "$SCRIPT_DIR/install-core.sh" "$@"
+        EXIT_CODE=$?
+        ;;
+    *)
+        if [[ -f "$SCRIPT_DIR/preflight-check.sh" ]]; then
+            bash "$SCRIPT_DIR/preflight-check.sh" "$@"
+            EXIT_CODE=$?
+        else
+            # Fallback if preflight is missing
+            bash "$SCRIPT_DIR/install-core.sh" "$@"
+            EXIT_CODE=$?
+        fi
+        ;;
+esac
 
 echo ""
 if [ $EXIT_CODE -eq 0 ]; then
@@ -50,5 +71,10 @@ else
 fi
 
 echo ""
-echo -e "${YELLOW}Press Enter to close...${NC}"
-read -r
+case " $* " in
+    *" --yes "*|*" -y "*|*" --update-engine"*|*" --update-engine="*|*" --update "*) ;;
+    *)
+        echo -e "${YELLOW}Press Enter to close...${NC}"
+        read -r
+        ;;
+esac

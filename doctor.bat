@@ -28,15 +28,32 @@ echo.
 echo GGUF files:
 dir "%USB_ROOT%models\*.gguf" 2>nul || echo  (none found)
 
-:: Ollama binary
+:: Inference engines
 if exist "%USB_ROOT%ollama\ollama.exe" (echo Ollama: FOUND) else (echo Ollama: MISSING — run install.bat)
+if exist "%USB_ROOT%llamacpp\llama-server.exe" (echo llama.cpp: FOUND) else (echo llama.cpp: not installed)
 
 :: AnythingLLM
 if exist "%USB_ROOT%anythingllm\AnythingLLM.exe" (echo AnythingLLM: FOUND) else (echo AnythingLLM: MISSING)
 
-:: .env
+:: Portable runtime config
 echo.
-echo .env:
+echo Runtime config (.env):
+if exist "%USB_ROOT%.env" (
+  findstr /B /C:"INFERENCE_ENGINE=" /C:"AUTO_TUNE=" /C:"SERVER_MODE=" /C:"OLLAMA_PORT=" /C:"LLAMACPP_PORT=" /C:"LAN_CHAT_PORT=" /C:"LLAMACPP_VARIANT=" "%USB_ROOT%.env"
+) else (
+  echo   [none — run install.bat or copy .env.example]
+)
+
+:: Hardware profile
+if exist "%USB_ROOT%installer_data\hardware.json" (
+  echo.
+  echo Hardware profile:
+  type "%USB_ROOT%installer_data\hardware.json"
+)
+
+:: AnythingLLM provider config
+echo.
+echo AnythingLLM provider (.env):
 if exist "%USB_ROOT%anythingllm_data\storage\.env" (type "%USB_ROOT%anythingllm_data\storage\.env") else (echo   [none])
 
 :: Port 11434 busy?

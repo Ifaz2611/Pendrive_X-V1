@@ -12,11 +12,30 @@ if [[ -f "$USB_DIR/models/installed-models.txt" ]]; then echo "Installed models:
 echo ""
 echo "GGUF files:"; ls -lh "$USB_DIR/models"/*.gguf 2>/dev/null || echo " (none)"
 echo ""
-[[ -x "$USB_DIR/ollama/ollama" ]] && echo -e "${GREEN}Ollama: FOUND${NC}" || echo -e "${RED}Ollama: MISSING${NC}"
+[[ -x "$USB_DIR/ollama/ollama" ]] && echo -e "${GREEN}Ollama (Linux): FOUND${NC}" || echo "Ollama (Linux): missing"
+[[ -x "$USB_DIR/ollama_mac/ollama" || -d "$USB_DIR/ollama_mac/Ollama.app" ]] && echo -e "${GREEN}Ollama (macOS): FOUND${NC}" || echo "Ollama (macOS): missing"
+[[ -x "$USB_DIR/llamacpp/llama-server" ]] && echo -e "${GREEN}llama.cpp: FOUND${NC}" || echo "llama.cpp: not installed"
 [[ -f "$USB_DIR/anythingllm/AnythingLLM.AppImage" ]] && echo -e "${GREEN}AppImage: FOUND${NC}" || echo "AppImage: missing (Linux)"
 [[ -d "$USB_DIR/anythingllm_mac/AnythingLLM.app" ]] && echo -e "${GREEN}AnythingLLM.app: FOUND${NC}" || echo "AnythingLLM.app: missing (macOS)"
 echo ""
-if [[ -f "$USB_DIR/anythingllm_data/storage/.env" ]]; then echo ".env:"; cat "$USB_DIR/anythingllm_data/storage/.env"; else echo "No .env"; fi
+if [[ -f "$USB_DIR/.env" ]]; then
+  echo "Runtime config (.env):"
+  grep -E '^(INFERENCE_ENGINE|AUTO_TUNE|SERVER_MODE|OLLAMA_PORT|LLAMACPP_PORT|LAN_CHAT_PORT|LLAMACPP_MODEL|LLAMACPP_VARIANT)=' "$USB_DIR/.env" || true
+else
+  echo "Runtime config (.env): missing (copy .env.example)"
+fi
+if [[ -f "$USB_DIR/installer_data/hardware.json" ]]; then
+  echo "Hardware profile: $(cat "$USB_DIR/installer_data/hardware.json")"
+fi
+echo ""
+if [[ -f "$USB_DIR/anythingllm_data/storage/.env" ]]; then echo "AnythingLLM provider (.env):"; cat "$USB_DIR/anythingllm_data/storage/.env"; else echo "No AnythingLLM .env"; fi
+echo ""
+if command -v ip >/dev/null 2>&1; then
+  LAN_IP=$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}' || true)
+elif [[ "$(uname -s 2>/dev/null || echo unknown)" == "Darwin" ]] && command -v ipconfig >/dev/null 2>&1; then
+  LAN_IP=$(ipconfig getifaddr en0 2>/dev/null || true)
+fi
+[[ -n "${LAN_IP:-}" ]] && echo "LAN IP: $LAN_IP (use --server for phone mode)"
 echo ""
 echo "Ports 11434-11445:"
 for p in $(seq 11434 11445); do
