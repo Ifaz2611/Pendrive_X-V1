@@ -1,361 +1,194 @@
-# Pendrive_X Quick Start
+# Pendrive_X — Get Started
 
-Pendrive_X lets you run a private AI assistant from a USB drive using Ollama and AnythingLLM.
+A friendly, step-by-step guide for first-time users.
 
-After the first installation, your models, chats, settings, and application data are stored on the USB drive.
+**What you're building:** a private AI chat assistant that lives entirely on a USB drive. After a one-time setup, it works with **no internet** and leaves **no trace on the computer** you plug it into.
 
-## Before you begin
+**What you need:**
 
-You need:
+- A USB drive (16 GB minimum, 64 GB to install all models)
+- The drive formatted as **exFAT** — *not* FAT32 (see [Step 0](#step-0-check-your-usb-drive))
+- Internet access **for the first install only**
+- A 64-bit computer (Windows, macOS, or Linux)
 
-- A USB drive formatted as **exFAT**, NTFS, or a Linux filesystem that supports files larger than 4 GB.
-- Internet access for the first installation.
-- At least **16 GB** of free space for one small model.
-- At least **32 GB** for a larger model.
-- At least **64 GB** if you want to install all preset models.
-- A modern 64-bit computer.
+> 💡 Not sure which model to pick? Start with **model 1** (best quality) or **model 5** (lightweight, works on almost anything). You can add more later — re-running the installer never re-downloads what you already have.
 
-Do not use FAT32. FAT32 cannot store the larger GGUF model files.
+---
 
-## 1. Copy the project to your USB drive
+## Step 0: Check your USB drive
 
-Copy all files and folders from this project to the **root** of the USB drive.
+FAT32 drives **cannot** hold the model files (they have a 4 GB per-file limit). You need **exFAT** (or NTFS / ext4).
 
-The launchers should be directly visible on the drive, for example:
+**Windows:** right-click the drive in File Explorer → **Format** → File system: `exFAT` → Start.
+⚠️ Formatting erases everything on the drive — back up first.
+
+**Linux:** check with `lsblk -f` or `df -T /media/$USER/YOURUSB`. Reformat with `mkfs.exfat` if needed.
+
+**macOS:** the drive is almost certainly already fine (APFS/HFS+/exFAT all work).
+
+---
+
+## Step 1: Copy the files to the USB
+
+Copy **everything** from this project to the **root** of the USB — the launchers must sit directly on the drive, like this:
 
 ```text
 E:\
 ├── install.bat
 ├── start-windows.bat
 ├── start-mac.command
-├── models\
-└── linux\
+├── linux\
+└── models\
 ```
 
-Do not put the project inside another folder unless you also run the scripts from that folder.
+Don't nest the project inside a folder on the drive.
 
-## 2. Install on Windows
+---
+
+## Step 2: Install
+
+Pick your operating system:
+
+### 🪟 Windows
 
 1. Open the USB drive in File Explorer.
-2. Double-click `install.bat`.
-3. Choose a model:
-   - `1` for the recommended larger model.
-   - `3` for a good coding model.
-   - `5` or `6` for a lightweight model.
-   - `1,3` to install multiple models.
-   - `all` to install every preset model.
-   - `c` to download a custom GGUF model.
-4. Wait while the model, Ollama, and AnythingLLM are downloaded.
-5. If the AnythingLLM installer opens, choose a location inside the USB drive:
+2. Double-click **`install.bat`**.
+3. When asked for models, type a number like `1`, several like `1,3`, or `all`.
+4. **Wait.** This downloads gigabytes — it can take a while depending on your internet.
+5. ⚠️ **Important:** when the **AnythingLLM installer** window pops up, click **Browse** and choose a folder **inside the USB**, e.g. `E:\anythingllm`. Do *not* pick Program Files — it must live on the drive.
+6. Close the AnythingLLM installer when it finishes. Installation is done.
 
-   ```text
-   E:\anythingllm
-   ```
-
-6. When installation finishes, double-click `start-windows.bat`.
-
-For an additional Windows launcher with extra disk and process checks, you can use `optimiced.bat`.
-
-## 3. Install on Linux
-
-Open a terminal and replace `/media/$USER/MYUSB` with the actual USB path if necessary:
+### 🐧 Linux
 
 ```bash
-cd /media/$USER/MYUSB
+# 1. Go to the USB and make scripts executable
+cd /media/$USER/YOUR_USB_NAME
 chmod +x linux/*.sh doctor.sh
+
+# 2. Run the preflight check — it verifies filesystem, space, and speed
 bash linux/preflight-check.sh
+
+# 3. Install (preflight offers to launch this for you)
+bash linux/install.sh
+# or directly:
+bash linux/install-core.sh /media/$USER/YOUR_USB_NAME
 ```
 
-The preflight check verifies the USB filesystem, available space, removable-drive detection, and read/write speed. Confirm the installation when prompted.
+Needed tools (usually preinstalled): `curl, tar, zstd, dd, df, lsblk, awk, findmnt`
 
-To install directly:
+Non-interactive install:
 
 ```bash
-bash linux/install-core.sh /media/$USER/MYUSB
+bash linux/install-core.sh /media/$USER/YOUR_USB_NAME --engine ollama --models 1,3 --yes
 ```
 
-Then start Pendrive_X:
+### 🍎 macOS
 
-```bash
-bash linux/start-linux.sh
-```
+No separate install needed — just run the launcher (Step 3). On first launch it downloads the macOS engine and AnythingLLM **directly onto the USB**.
 
-If the USB is mounted somewhere else, pass its path explicitly:
+If macOS blocks it: right-click `start-mac.command` → **Open** → confirm.
 
-```bash
-bash linux/start-linux.sh /path/to/usb
-```
+---
 
-Linux may require these tools:
+## Step 3: Launch the AI
 
-```text
-curl, tar, zstd, dd, df, lsblk, awk, findmnt
-```
-
-## 4. Use macOS
-
-1. Copy the project to the USB drive.
-2. Open Terminal.
-3. Make the launcher executable:
-
-   ```bash
-   cd /Volumes/YOUR_USB_NAME
-   chmod +x start-mac.command
-   ```
-
-4. Start it:
-
-   ```bash
-   ./start-mac.command
-   ```
-
-On the first run, the launcher downloads the macOS versions of Ollama and AnythingLLM directly to the USB drive. This may take several minutes and requires internet access.
-
-If macOS blocks the launcher, right-click `start-mac.command`, choose **Open**, and confirm. The AnythingLLM application may also require permission the first time it runs.
-
-## 5. Starting the AI after installation
-
-Use the launcher for your operating system:
-
-| Operating system | Launcher |
-|---|---|
-| Windows | `start-windows.bat` |
+| OS | Command |
+|----|---------|
+| Windows | Double-click **`start-windows.bat`** |
 | Linux | `bash linux/start-linux.sh` |
-| macOS | `./start-mac.command` |
+| macOS | `./start-mac.command` (or double-click it) |
 
-Keep the terminal window open while using the AI. It runs the selected engine
-(Ollama or llama.cpp) in the background and uses a local address such as:
+What happens:
 
-```text
-http://127.0.0.1:11434     (Ollama)
-http://127.0.0.1:8081      (llama.cpp)
-```
+1. A terminal window opens and starts the AI engine.
+2. **AnythingLLM** (the chat app) opens automatically.
+3. **Keep the terminal window open** the whole time you use the AI.
 
-AnythingLLM should open automatically.
+⏱️ First launch takes longer while the model loads into memory. That's normal.
 
-## 6. Choosing the inference engine
+---
 
-Pendrive_X can run two engines:
+## Step 4: Using it day-to-day
 
-| Engine | Best for | Notes |
-|---|---|---|
-| **Ollama** (`ollama`) | Default, easiest | Background service; supports `ollama` model aliases |
-| **llama.cpp** (`llamacpp`) | Low-RAM PCs | Standalone `llama-server`; saves ~1.5–2 GB RAM and starts faster |
+### Switching models
 
-Choose at install time:
+- Open AnythingLLM → **Settings → LLM Provider** → pick **Ollama** or **Generic OpenAI** (depends on your engine) → choose a model.
+- Installed models are listed in `models/installed-models.txt`.
+- Or launch with a specific model: `start-windows.bat --model=qwen-local`
 
-```bat
-install.bat --engine=ollama
-install.bat --engine=llamacpp
-```
+### Adding models later
 
-```bash
-bash linux/install-core.sh /path/to/usb --engine=llamacpp
-```
+Just run the installer again and pick more numbers — it skips everything already downloaded.
 
-Or switch later by editing `.env` on the USB root:
-
-```text
-INFERENCE_ENGINE=llamacpp
-```
-
-Useful llama.cpp settings in the same file:
-
-```text
-LLAMACPP_VARIANT=auto     # auto, cuda, rocm, vulkan, cpu
-LLAMACPP_MODEL=           # empty = first installed model
-LLAMACPP_NGL=auto         # GPU layers (auto = hardware detection)
-LLAMACPP_THREADS=auto
-LLAMACPP_CTX=auto
-```
-
-The launchers automatically configure AnythingLLM for the chosen engine, so
-you do not need to change the provider by hand.
-
-## 7. Choosing a model
-
-The launchers select the first installed model (or `LLAMACPP_MODEL` in `.env`)
-automatically. To pick a different one inside AnythingLLM:
-
-1. Open **Settings**.
-2. Open the **LLM** or **LLM Provider** section.
-3. Select **Ollama** (Ollama engine) or **Generic OpenAI** (llama.cpp engine).
-4. Choose one of the installed models.
-5. Save the settings.
-
-Installed models are listed in:
-
-```text
-models\installed-models.txt
-```
-
-You can also change the default model in:
-
-```text
-anythingllm_data\storage\.env
-```
-
-The relevant setting is:
-
-```text
-OLLAMA_MODEL_PREF=model-name-local
-```
-
-or, for the llama.cpp engine:
-
-```text
-GENERIC_OPEN_AI_MODEL_PREF=model-name-local
-```
-
-## 8. Changing the token limit
-
-The default context size is 4096 tokens. To increase it:
-
-1. Close Pendrive_X.
-2. Open `anythingllm_data/storage/.env` on the USB.
-3. Change this value:
-
-   ```text
-   OLLAMA_MODEL_TOKEN_LIMIT=4096
-   ```
-
-   For example:
-
-   ```text
-   OLLAMA_MODEL_TOKEN_LIMIT=8192
-   ```
-
-4. Save the file and start Pendrive_X again.
-
-Higher values require more RAM. If the computer becomes slow or the model stops responding, use a lower value.
-
-## 9. Adding another model later
-
-Run the installer again and select the additional model. Existing valid downloads are skipped.
-
-On Windows:
-
-```text
-install.bat
-```
-
-On Linux:
-
-```bash
-bash linux/install-core.sh /path/to/usb
-```
-
-You can also choose `c` or `custom` and provide a direct `.gguf` URL from Hugging Face.
-
-## 10. Using it from a phone (LAN mode)
-
-Start the launcher with `--server` (or `--lan`) to reach the AI from another
-device on the same Wi-Fi:
+### Using it from your phone 📱
 
 ```bat
 start-windows.bat --server
-start-windows.bat --headless
 ```
-
 ```bash
 bash linux/start-linux.sh --server
+```
+```bash
 ./start-mac.command --lan
 ```
 
-The terminal shows a LAN address such as `http://192.168.1.20:8081/` and a QR
-code. Scan the QR code with a phone camera, or type the address into the phone's
-browser.
+The terminal prints a LAN address and a **QR code** — scan it with your phone camera. Both devices must be on the same Wi-Fi. There's no password, so only do this on networks you trust.
 
-- With **llama.cpp**, the browser opens llama-server's built-in chat UI.
-- With **Ollama**, Pendrive_X starts a small mobile chat page on port `8090`.
-- `--headless` skips the desktop AnythingLLM window and keeps only the server.
-- There is no password. Use this only on a network you trust.
+---
 
-## 11. Shutting down safely
+## Step 5: Shutting down safely
 
-When you finish using the AI:
+1. Go back to the launcher terminal window.
+2. Press **any key** (Windows) or **Enter** (Linux/macOS).
+3. Wait for the "shutdown complete" message.
+4. **Safely eject** the USB.
 
-1. Return to the terminal window running the launcher.
-2. Press a key on Windows, or press **Enter** on Linux/macOS.
-3. Wait for the shutdown message.
-4. Safely eject the USB drive.
+Never unplug while it's running — chats and settings save to the drive and could corrupt.
 
-Do not unplug the USB while the AI is still running. Chats and settings are saved on the drive.
+---
 
-## 12. Updating engines and the UI
+## Common questions
 
-The updater replaces engine binaries and AnythingLLM, but **never** touches
-`models/*.gguf`, `ollama/data`, or `anythingllm_data` (chats and settings).
+**Do I need internet every time?** No — only for the first install. Everything runs offline after that.
 
-```bat
-install.bat --update-engine
-install.bat --update-engine=llamacpp
-start-windows.bat --update-engine
-```
+**Does it slow down my computer?** It uses your computer's RAM and CPU/GPU like any app, but installs *nothing* on it. Close other apps if it feels slow, or use a smaller model (5 or 6).
 
-```bash
-bash linux/install-core.sh /path/to/usb --update-engine
-bash linux/start-linux.sh --update-engine=anythingllm
-./start-mac.command --update-engine
-```
+**Can I move it between computers?** Yes — that's the point. Just plug into any PC and run the launcher. Your chats and settings travel with the drive.
 
-`all` refreshes only components that are installed. To change which version is
-installed, edit `versions.env` first, then run the updater.
+**Is my data private?** Chats, models, and settings all live on the USB in `anythingllm_data/`. Nothing is sent anywhere. ⚠️ But anyone who gets the drive can read it — use BitLocker or VeraCrypt if it holds sensitive info.
+
+**Which engine should I choose?**
+
+| Engine | Choose it if… |
+|--------|---------------|
+| `ollama` (default) | You want the simplest, most compatible setup |
+| `llamacpp` | Your PC is low on RAM — it saves ~1.5–2 GB |
+
+Set it in `.env` on the USB root: `INFERENCE_ENGINE=llamacpp`, then relaunch.
+
+**How do I increase the AI's memory (context)?**
+
+Edit `anythingllm_data/storage/.env` on the USB and raise `OLLAMA_MODEL_TOKEN_LIMIT` (default `4096` → try `8192`). More memory needs more RAM — if things get slow, lower it again.
+
+---
 
 ## Troubleshooting
 
-### The installer says FAT32 is not supported
+| Problem | Try this |
+|---------|----------|
+| "FAT32 is not supported" | Reformat the USB as **exFAT** (Step 0) |
+| AnythingLLM window missing | Re-run the installer; when it asks, pick `E:\anythingllm` on the USB |
+| AI is very slow | Use model `5` or `6`; lower token limit to `4096`; use a USB 3.0 port; close other apps |
+| Engine won't start | Run `doctor.bat` (Windows) or `bash doctor.sh` (Linux/macOS) for diagnostics |
+| Download failed halfway | Re-run the installer — it resumes/skips valid files. Check you have enough free space |
+| Phone can't connect | Same Wi-Fi? Allow the port in the firewall? Avoid guest networks |
 
-Back up the USB, reformat it as **exFAT**, and copy the project back to it. Formatting erases the drive.
+Still stuck? Check `anythingllm_data/logs/` on the USB for detailed logs.
 
-### AnythingLLM is missing
+---
 
-Run the installer again. On Windows, make sure the AnythingLLM installation location is inside the USB drive:
+## What's next?
 
-```text
-E:\anythingllm
-```
-
-### Ollama does not start
-
-- Close another Ollama instance running on the computer.
-- Restart the launcher.
-- Make sure the USB has free space.
-- Check the launcher logs in `anythingllm_data/logs`.
-
-### llama.cpp does not start
-
-- Make sure `llamacpp/` exists on the USB. If not, run `install.bat --engine=llamacpp` or `bash linux/install-core.sh /path/to/usb --engine=llamacpp`.
-- If the GPU build crashes, set `LLAMACPP_VARIANT=cpu` in `.env` and run `--update-engine=llamacpp`.
-- Check `anythingllm_data/logs` for the engine log.
-
-### The phone cannot connect in LAN mode
-
-- Both devices must be on the same Wi-Fi network.
-- Allow the displayed port through the host firewall.
-- Guest networks and "AP isolation" often block device-to-device traffic.
-
-### The AI is slow
-
-- Use model `5` or `6`.
-- Reduce the token limit to 4096.
-- Use a USB 3.0 or newer port.
-- Close other applications to free RAM.
-
-### You need diagnostics
-
-On Windows, run:
-
-```text
-doctor.bat
-```
-
-On Linux or macOS, run:
-
-```bash
-bash doctor.sh
-```
-
-## Privacy note
-
-Pendrive_X is designed to run locally after setup. Models, chats, settings, and logs are stored on the USB drive. Anyone who obtains the USB may be able to read the stored data, so use BitLocker, VeraCrypt, or another encryption method if the drive contains sensitive information.
+- 📖 Full technical reference: [`README.md`](README.md)
+- 🛠️ Contribute or report issues: [`CONTRIBUTING.md`](CONTRIBUTING.md) · [`SECURITY.md`](SECURITY.md)
+- 📜 License: Apache 2.0 — [`LICENSE`](LICENSE)

@@ -3,8 +3,8 @@
 ## Supported Versions
 | Version | Supported |
 |---------|-----------|
-| 1.1.x   | ✅ |
-| <1.1    | ❌ please upgrade |
+| 1.1.x   | |
+| <1.1    | please upgrade |
 
 ## Reporting a Vulnerability
 - Email: **zahin26112004@gmail.com** with subject `[SECURITY]`
