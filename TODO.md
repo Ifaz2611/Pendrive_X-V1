@@ -33,31 +33,35 @@ This document tracks upcoming architectural improvements, features, security har
 
 ## Phase 2: Model Catalog & AI Capabilities Expansion
 
-- [ ] **Quantization Tier Selector**
+- [x] **Quantization Tier Selector**
   - Expand `models/catalog.json` with multi-quantization options per model:
     - `Q4_K_M`: Fast, standard memory footprint (default).
     - `Q5_K_M`: High accuracy / reasoning fidelity.
     - `Q8_0`: Maximum quality where 16GB+ RAM is available.
     - `Q2_K` / `IQ3_XXS`: Ultra-compact for low-end laptops (4GB RAM).
+  - Implementation: Added multi-tier `quantizations` map to all catalog models, `-Quant` / `--quant` CLI flags, token syntax parsing (`<num>:<tier>`), and interactive tier selector menus across Windows and Linux/macOS installers.
 
-- [ ] **Vision & Multimodal Support**
+- [x] **Vision & Multimodal Support**
   - Add Vision-capable presets to `models/catalog.json`:
     - `Llama-3.2-11B-Vision-Instruct-GGUF`
     - `Qwen2.5-VL-7B-Instruct-GGUF`
     - `Moondream2-GGUF` (compact ~1.8 GB for low-spec systems).
   - Ensure clip projector files (`mmproj-*.gguf`) are automatically downloaded and linked in Modelfiles.
+  - Implementation: Added vision presets with clip projector metadata, automated `mmproj` download in Windows and Linux installers, generated dual `FROM` Modelfiles for Ollama, and wired `--mmproj` arguments into `start-windows.bat`, `tools/start-engine.ps1`, `linux/start-linux.sh`, and `start-mac.command`.
 
-- [ ] **Dedicated Embedding & Reranker Models for Local RAG**
+- [x] **Dedicated Embedding & Reranker Models for Local RAG**
   - Pre-configure lightweight embedding models on USB for fast local document ingestion:
     - `nomic-embed-text-v1.5-GGUF` (~270 MB)
     - `bge-small-en-v1.5-GGUF` (~130 MB)
     - `bge-reranker-v2-m3-GGUF`
   - Update AnythingLLM `.env` to leverage local Ollama embedding endpoints instead of native fallbacks.
+  - Implementation: Added models 10-12 to catalog, configured Ollama embedding endpoints (`EMBEDDING_ENGINE=ollama`, `EMBEDDING_MODEL_PREF`, `EMBEDDING_MODEL_MAX_CHUNK_LENGTH=8192`) in `tools/config-anythingllm.ps1`, `tools/common.sh`, `optimiced.bat`, and `install-core.sh`.
 
-- [ ] **Interactive HuggingFace Search CLI**
+- [x] **Interactive HuggingFace Search CLI**
   - Add CLI search feature in `install-core.ps1` and `linux/install-core.sh` using the HuggingFace Hub API:
     - Query models directly (e.g. `search: deepseek-r1-distill`).
     - Filter by GGUF format and display available quantizations with direct one-click download.
+  - Implementation: Built-in HuggingFace Hub search CLI (`Invoke-HuggingFaceSearch` in PowerShell, `search_huggingface` in Bash), supporting direct query via CLI flags (`-Search` / `--search`), search commands (`s`, `search: <query>`), live repository search with download/like metrics, quantization tree listing, mmproj projector detection, and 1-click install.
 
 ---
 

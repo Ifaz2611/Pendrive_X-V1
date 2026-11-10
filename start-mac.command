@@ -271,9 +271,15 @@ echo -e "${GREEN}[✓]${NC} Configured: ${CYAN}${PX_MODEL_LOCAL}${NC} via ${INFE
 echo ""
 echo -e "${DGRAY}[STEP 6/7]${NC} Starting ${INFERENCE_ENGINE} from USB..."
 if [[ "$INFERENCE_ENGINE" == "llamacpp" ]]; then
+    MMPROJ_ARG=()
+    if [[ -n "$PX_MMPROJ_PATH" && -f "$PX_MMPROJ_PATH" ]]; then
+        MMPROJ_ARG=(--mmproj "$PX_MMPROJ_PATH")
+        echo -e "${DGRAY}  Vision projector: ${PX_MMPROJ_FILE}${NC}"
+    fi
     # shellcheck disable=SC2086
     "$LLAMA_SERVER" \
         -m "$PX_MODEL_PATH" \
+        "${MMPROJ_ARG[@]}" \
         --host "$BIND_HOST" \
         --port "$ENGINE_PORT" \
         -ngl "$PENDRIVE_NGL" \

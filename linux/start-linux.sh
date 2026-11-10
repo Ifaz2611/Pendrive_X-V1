@@ -219,9 +219,15 @@ fi
 # ── Start the engine
 echo -e "${YELLOW}Starting ${INFERENCE_ENGINE} on ${BIND_HOST}:${ENGINE_PORT}...${NC}"
 if [[ "$INFERENCE_ENGINE" == "llamacpp" ]]; then
+    MMPROJ_ARG=()
+    if [[ -n "$PX_MMPROJ_PATH" && -f "$PX_MMPROJ_PATH" ]]; then
+        MMPROJ_ARG=(--mmproj "$PX_MMPROJ_PATH")
+        echo -e "${DGRAY}  Vision projector: ${PX_MMPROJ_FILE}${NC}"
+    fi
     # shellcheck disable=SC2086
     "$LLAMA_SERVER" \
         -m "$PX_MODEL_PATH" \
+        "${MMPROJ_ARG[@]}" \
         --host "$BIND_HOST" \
         --port "$ENGINE_PORT" \
         -ngl "$PENDRIVE_NGL" \

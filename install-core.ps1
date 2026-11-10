@@ -20,6 +20,9 @@ param(
     [string]$Models = "",
     [string]$CustomUrl = "",
     [string]$CustomName = "",
+    [string]$Quant = "",
+    [string]$Search = "",
+    [string]$EmbeddingModel = "",
     # Accepts install engines (ollama|llamacpp|both) and updater targets
     # (all|anythingllm|ui). Validated at runtime so -UpdateEngine can use
     # the same parameter.
@@ -37,10 +40,11 @@ $USB_Drive = Split-Path -Parent $MyInvocation.MyCommand.Path
 # Display help message and exit if the -Help parameter is provided.
 if ($Help) {
     Write-Host "Pendrive_X installer — Usage:" -ForegroundColor Cyan
-    Write-Host "  powershell -ExecutionPolicy Bypass -File install-core.ps1 [-Models 1,3] [-CustomUrl https://...gguf] [-Yes]" -ForegroundColor White
+    Write-Host "  powershell -ExecutionPolicy Bypass -File install-core.ps1 [-Models 1,3] [-Quant Q4_K_M|Q5_K_M|Q8_0|Q2_K] [-Yes]" -ForegroundColor White
+    Write-Host "  powershell -ExecutionPolicy Bypass -File install-core.ps1 [-Search <query>] [-CustomUrl https://...gguf] [-Yes]" -ForegroundColor White
     Write-Host "  powershell -ExecutionPolicy Bypass -File install-core.ps1 [-Engine ollama|llamacpp|both]" -ForegroundColor White
     Write-Host "  powershell -ExecutionPolicy Bypass -File install-core.ps1 -UpdateEngine [-Engine all|ollama|anythingllm|llamacpp] [-Yes]" -ForegroundColor White
-    Write-Host "  Examples: -Models all | -Models 1,3,c -CustomUrl https://huggingface.co/.../model.gguf" -ForegroundColor DarkGray
+    Write-Host "  Examples: -Models 1:Q8_0,7:Q4_K_M | -Search deepseek-r1-distill | -Models all -Quant Q4_K_M" -ForegroundColor DarkGray
     exit 0
 }
 # If a custom URL is provided via parameter, ensure 'c' (custom) is added to the Models selection.
@@ -322,17 +326,21 @@ if (Test-Path $catalogFile) {
             $parsedCatalog = @()
             foreach ($m in $jsonCatalog.models) {
                 $parsedCatalog += @{
-                    Num      = [int]$m.num
-                    Name     = [string]$m.name
-                    File     = [string]$m.file
-                    URL      = [string]$m.url
-                    Size     = [string]$m.size_gb
-                    MinBytes = [long]$m.min_bytes
-                    Local    = [string]$m.local
-                    Label    = [string]$m.label
-                    Badge    = [string]$m.badge
-                    Prompt   = [string]$m.prompt
-                    SHA256   = [string]$m.sha256
+                    Num           = [int]$m.num
+                    Name          = [string]$m.name
+                    File          = [string]$m.file
+                    URL           = [string]$m.url
+                    Size          = [string]$m.size_gb
+                    MinBytes      = [long]$m.min_bytes
+                    Local         = [string]$m.local
+                    Label         = [string]$m.label
+                    Badge         = [string]$m.badge
+                    Type          = if ($m.type) { [string]$m.type } else { "llm" }
+                    DefaultQuant  = if ($m.default_quant) { [string]$m.default_quant } else { "Q4_K_M" }
+                    Prompt        = [string]$m.prompt
+                    SHA256        = [string]$m.sha256
+                    Quantizations = $m.quantizations
+                    Mmproj        = $m.mmproj
                 }
             }
             if ($parsedCatalog.Count -gt 0) {
@@ -340,6 +348,222 @@ if (Test-Path $catalogFile) {
             }
         }
     } catch {}
+}
+
+# Helper to switch a model to a specified quantization tier
+function Set-ModelQuantizationTier {
+    param(
+        [hashtable]$ModelObj,
+        [string]$Tier
+    )
+    if ([string]::IsNullOrWhiteSpace($Tier) -or -not $ModelObj.Quantizations) { return $false }
+    $tierUpper = $Tier.Trim().ToUpper()
+    $foundKey = $null
+
+    if ($ModelObj.Quantizations -is [System.Management.Automation.PSCustomObject]) {
+        foreach ($prop in $ModelObj.Quantizations.PSObject.Properties) {
+            if ($prop.Name.ToUpper() -eq $tierUpper) {
+                $foundKey = $prop.Name
+                break
+            }
+        }
+        if ($foundKey) {
+            $q = $ModelObj.Quantizations.$foundKey
+            $ModelObj.File = [string]$q.file
+            $ModelObj.URL = [string]$q.url
+            $ModelObj.Size = [string]$q.size_gb
+            $ModelObj.MinBytes = [long]$q.min_bytes
+            $ModelObj.ActiveQuant = $foundKey
+            return $true
+        }
+    } elseif ($ModelObj.Quantizations -is [System.Collections.IDictionary]) {
+        foreach ($k in $ModelObj.Quantizations.Keys) {
+            if ($k.ToString().ToUpper() -eq $tierUpper) {
+                $foundKey = $k
+                break
+            }
+        }
+        if ($foundKey) {
+            $q = $ModelObj.Quantizations[$foundKey]
+            $ModelObj.File = [string]$q.file
+            $ModelObj.URL = [string]$q.url
+            $ModelObj.Size = [string]$q.size_gb
+            $ModelObj.MinBytes = [long]$q.min_bytes
+            $ModelObj.ActiveQuant = $foundKey
+            return $true
+        }
+    }
+    return $false
+}
+
+# Interactive HuggingFace Hub Search CLI
+function Invoke-HuggingFaceSearch {
+    param([string]$InitialQuery = "")
+
+    $query = $InitialQuery
+    if ([string]::IsNullOrWhiteSpace($query)) {
+        Write-Host ""
+        Write-Host "  ---- HuggingFace Hub Search CLI ----" -ForegroundColor Cyan
+        Write-Host "  Search for GGUF models directly on HuggingFace Hub." -ForegroundColor Gray
+        Write-Host "  Example: deepseek-r1-distill, mistral, llama-3.2, smollm" -ForegroundColor DarkGray
+        Write-Host ""
+        $query = Read-Host "  Enter search query (or 'b' to go back)"
+    }
+    if ([string]::IsNullOrWhiteSpace($query) -or $query.Trim().ToLower() -eq 'b') {
+        return $null
+    }
+
+    Write-Host "  Searching HuggingFace Hub for '$query'..." -ForegroundColor Yellow
+    $headers = @{ "User-Agent" = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Pendrive_X" }
+    $encoded = [System.Uri]::EscapeDataString($query.Trim())
+    $searchUrl = "https://huggingface.co/api/models?search=$encoded&filter=gguf&sort=downloads&direction=-1&limit=10"
+
+    $results = @()
+    try {
+        $results = @(Invoke-RestMethod -Uri $searchUrl -Headers $headers -TimeoutSec 15)
+    } catch {
+        Write-Host "  ERROR: HuggingFace API search failed: $_" -ForegroundColor Red
+        return $null
+    }
+
+    if ($results.Count -eq 0) {
+        Write-Host "  No GGUF models found matching '$query'." -ForegroundColor Yellow
+        return $null
+    }
+
+    Write-Host ""
+    Write-Host "  Found $($results.Count) model repositories:" -ForegroundColor Green
+    for ($i = 0; $i -lt $results.Count; $i++) {
+        $r = $results[$i]
+        $dl = if ($r.downloads) { [string]::Format("{0:N0}", [long]$r.downloads) } else { "0" }
+        $likes = if ($r.likes) { [string]$r.likes } else { "0" }
+        Write-Host "    [$($i + 1)] " -ForegroundColor Yellow -NoNewline
+        Write-Host "$($r.id)" -ForegroundColor White -NoNewline
+        Write-Host " (Downloads: $dl, Likes: $likes)" -ForegroundColor DarkGray
+    }
+    Write-Host "    [B] Back" -ForegroundColor DarkGray
+    Write-Host ""
+
+    $pick = Read-Host "  Select repository number [1-$($results.Count)]"
+    if ($pick.Trim().ToLower() -eq 'b' -or [string]::IsNullOrWhiteSpace($pick)) {
+        return $null
+    }
+    $pickIdx = 0
+    if (-not [int]::TryParse($pick.Trim(), [ref]$pickIdx) -or $pickIdx -lt 1 -or $pickIdx -gt $results.Count) {
+        Write-Host "  Invalid selection." -ForegroundColor Red
+        return $null
+    }
+
+    $selectedRepo = $results[$pickIdx - 1].id
+    Write-Host "  Fetching files for $selectedRepo..." -ForegroundColor Yellow
+    $treeUrl = "https://huggingface.co/api/models/$selectedRepo/tree/main"
+    $files = @()
+    try {
+        $files = @(Invoke-RestMethod -Uri $treeUrl -Headers $headers -TimeoutSec 15)
+    } catch {
+        try {
+            $mDetail = Invoke-RestMethod -Uri "https://huggingface.co/api/models/$selectedRepo" -Headers $headers -TimeoutSec 15
+            if ($mDetail.siblings) {
+                $files = @($mDetail.siblings | ForEach-Object { @{ path = $_.rfilename; size = 0 } })
+            }
+        } catch {}
+    }
+
+    $ggufs = @($files | Where-Object { $_.path -and $_.path.ToLower().EndsWith('.gguf') })
+    if ($ggufs.Count -eq 0) {
+        Write-Host "  No .gguf files found in $selectedRepo." -ForegroundColor Red
+        return $null
+    }
+
+    $mmprojItem = $ggufs | Where-Object { $_.path -match '(?i)mmproj' } | Select-Object -First 1
+    $modelFiles = @($ggufs | Where-Object { $_.path -notmatch '(?i)mmproj' })
+    if ($modelFiles.Count -eq 0) { $modelFiles = $ggufs }
+
+    Write-Host ""
+    Write-Host "  Available quantizations in $($selectedRepo):" -ForegroundColor Green
+    for ($j = 0; $j -lt $modelFiles.Count; $j++) {
+        $f = $modelFiles[$j]
+        $sizeStr = if ($f.size -and $f.size -gt 0) {
+            $gb = [math]::Round($f.size / 1GB, 2)
+            " (~$gb GB)"
+        } else { "" }
+        $rec = if ($f.path -match '(?i)Q4_K_M') { " [RECOMMENDED]" } else { "" }
+        Write-Host "    [$($j + 1)] " -ForegroundColor Yellow -NoNewline
+        Write-Host "$($f.path)" -ForegroundColor White -NoNewline
+        Write-Host "$sizeStr" -ForegroundColor DarkGray -NoNewline
+        Write-Host "$rec" -ForegroundColor Magenta
+    }
+    Write-Host "    [B] Back" -ForegroundColor DarkGray
+    Write-Host ""
+
+    $filePick = Read-Host "  Select file number [1-$($modelFiles.Count)]"
+    if ($filePick.Trim().ToLower() -eq 'b' -or [string]::IsNullOrWhiteSpace($filePick)) {
+        return $null
+    }
+    $fileIdx = 0
+    if (-not [int]::TryParse($filePick.Trim(), [ref]$fileIdx) -or $fileIdx -lt 1 -or $fileIdx -gt $modelFiles.Count) {
+        Write-Host "  Invalid selection." -ForegroundColor Red
+        return $null
+    }
+
+    $chosenFile = $modelFiles[$fileIdx - 1]
+    $fileName = $chosenFile.path
+    $fileUrl = "https://huggingface.co/$selectedRepo/resolve/main/$fileName"
+    $fileSizeGB = if ($chosenFile.size -gt 0) { [math]::Round($chosenFile.size / 1GB, 2) } else { "?" }
+    $minBytes = if ($chosenFile.size -gt 0) { [long]($chosenFile.size * 0.9) } else { 100000000 }
+
+    $baseName = [System.IO.Path]::GetFileNameWithoutExtension($fileName)
+    $cleanLocal = ($baseName.ToLower() -replace '[^a-z0-9]+', '-') -replace '-+', '-'
+    $cleanLocal = $cleanLocal.Trim('-')
+    if ($cleanLocal.Length -gt 28) { $cleanLocal = $cleanLocal.Substring(0, 28) }
+    if ($cleanLocal -notmatch '-local$') { $cleanLocal = "$cleanLocal-local" }
+
+    Write-Host "  Default alias: $cleanLocal" -ForegroundColor Cyan
+    $aliasInput = Read-Host "  Custom alias (press Enter for '$cleanLocal')"
+    if (-not [string]::IsNullOrWhiteSpace($aliasInput)) {
+        $cleanLocal = ($aliasInput.Trim().ToLower() -replace '\s+', '-')
+        if ($cleanLocal -notmatch '-local$') { $cleanLocal = "$cleanLocal-local" }
+    }
+
+    $customPrompt = Read-Host "  System prompt (press Enter for default)"
+    if ([string]::IsNullOrWhiteSpace($customPrompt)) {
+        $customPrompt = "You are a helpful AI assistant."
+    }
+
+    $modelObj = @{
+        Num      = 90 + (Get-Random -Minimum 1 -Maximum 9)
+        Name     = "$selectedRepo ($fileName)"
+        File     = $fileName
+        URL      = $fileUrl
+        Size     = [string]$fileSizeGB
+        MinBytes = $minBytes
+        Local    = $cleanLocal
+        Label    = "HUGGINGFACE"
+        Badge    = "HF-SEARCH"
+        Type     = "llm"
+        Prompt   = $customPrompt
+        SHA256   = ""
+    }
+
+    if ($mmprojItem) {
+        $mmFile = $mmprojItem.path
+        $mmUrl = "https://huggingface.co/$selectedRepo/resolve/main/$mmFile"
+        $mmSize = if ($mmprojItem.size -gt 0) { [math]::Round($mmprojItem.size / 1GB, 2) } else { "1.0" }
+        $mmMin = if ($mmprojItem.size -gt 0) { [long]($mmprojItem.size * 0.9) } else { 500000000 }
+        $modelObj["Mmproj"] = @{
+            file     = $mmFile
+            url      = $mmUrl
+            size_gb  = [string]$mmSize
+            min_bytes= $mmMin
+            sha256   = ""
+        }
+        $modelObj.Label = "VISION"
+        $modelObj.Type = "vision"
+        Write-Host "  Multimodal projector detected: $mmFile" -ForegroundColor Green
+    }
+
+    Write-Host "  Model added from HuggingFace search!" -ForegroundColor Green
+    return $modelObj
 }
 
 # -----------------------------------------------------------------
@@ -556,25 +780,16 @@ if ($freeGB -gt 0) {
 Write-Host "[1/6] Choose your AI model(s):" -ForegroundColor Yellow
 Write-Host ""
 
-# Iterate through the model catalog and display each model with its metadata.
-foreach ($m in $ModelCatalog) {
+# 1. Text & Reasoning Models
+Write-Host "  -- Text & Reasoning Models --" -ForegroundColor DarkCyan
+foreach ($m in ($ModelCatalog | Where-Object { -not $_.Type -or $_.Type -eq "llm" })) {
     $numStr   = "  [$($m.Num)]"
     $nameStr  = " $($m.Name)"
     $sizeStr  = " (~$($m.Size) GB)"
+    $labelStr   = if ($m.Label -eq "UNCENSORED") { " [UNCENSORED]" } else { " [STANDARD]" }
+    $labelColor = if ($m.Label -eq "UNCENSORED") { "Red" } else { "DarkCyan" }
+    $badgeStr = if ($m.Badge) { " - $($m.Badge)" } else { "" }
 
-    # Color-code the label based on whether the model is uncensored or standard.
-    if ($m.Label -eq "UNCENSORED") {
-        $labelStr   = " [UNCENSORED]"
-        $labelColor = "Red"
-    } else {
-        $labelStr   = " [STANDARD]"
-        $labelColor = "DarkCyan"
-    }
-
-    $badgeStr = ""
-    if ($m.Badge) { $badgeStr = " - $($m.Badge)" }
-
-    # Print the formatted model information to the console.
     Write-Host $numStr  -ForegroundColor Yellow    -NoNewline
     Write-Host $nameStr -ForegroundColor White     -NoNewline
     Write-Host $sizeStr -ForegroundColor DarkGray  -NoNewline
@@ -582,26 +797,75 @@ foreach ($m in $ModelCatalog) {
     Write-Host $badgeStr -ForegroundColor Magenta
 }
 
+# 2. Vision & Multimodal Models
+Write-Host ""
+Write-Host "  -- Vision & Multimodal Models --" -ForegroundColor Cyan
+foreach ($m in ($ModelCatalog | Where-Object { $_.Type -eq "vision" })) {
+    $numStr   = "  [$($m.Num)]"
+    $nameStr  = " $($m.Name)"
+    $sizeStr  = " (~$($m.Size) GB + mmproj)"
+    $badgeStr = if ($m.Badge) { " - $($m.Badge)" } else { "" }
+
+    Write-Host $numStr  -ForegroundColor Yellow    -NoNewline
+    Write-Host $nameStr -ForegroundColor White     -NoNewline
+    Write-Host $sizeStr -ForegroundColor DarkGray  -NoNewline
+    Write-Host " [VISION]" -ForegroundColor Green  -NoNewline
+    Write-Host $badgeStr -ForegroundColor Magenta
+}
+
+# 3. Embedding & Reranker Models for Local RAG
+Write-Host ""
+Write-Host "  -- Embedding & Reranker Models (Local RAG) --" -ForegroundColor DarkYellow
+foreach ($m in ($ModelCatalog | Where-Object { $_.Type -in @("embedding", "reranker") })) {
+    $numStr   = "  [$($m.Num)]"
+    $nameStr  = " $($m.Name)"
+    $sizeStr  = " (~$($m.Size) GB)"
+    $badgeStr = if ($m.Badge) { " - $($m.Badge)" } else { "" }
+    $lblColor = if ($m.Type -eq "reranker") { "Yellow" } else { "Cyan" }
+
+    Write-Host $numStr  -ForegroundColor Yellow    -NoNewline
+    Write-Host $nameStr -ForegroundColor White     -NoNewline
+    Write-Host $sizeStr -ForegroundColor DarkGray  -NoNewline
+    Write-Host " [$($m.Label)]" -ForegroundColor $lblColor -NoNewline
+    Write-Host $badgeStr -ForegroundColor Magenta
+}
+
 Write-Host ""
 Write-Host "  [C] CUSTOM - Enter your own HuggingFace GGUF URL" -ForegroundColor Green
+Write-Host "  [S] SEARCH - Interactive HuggingFace Hub Search CLI" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "  ------------------------------------------------" -ForegroundColor DarkGray
-Write-Host "  Enter number(s) separated by commas  (e.g. 1,3)" -ForegroundColor Gray
+Write-Host "  Enter number(s) (e.g. 1,3 or 1:Q8_0,7:Q4_K_M)" -ForegroundColor Gray
+Write-Host "  Type 's' or 'search: <query>' to query HuggingFace directly" -ForegroundColor Gray
 Write-Host "  Type 'all' for every preset model" -ForegroundColor Gray
 Write-Host "  Type 'c' to add a custom model" -ForegroundColor Gray
-Write-Host "  Mix them!  (e.g. 1,3,c)" -ForegroundColor Gray
 Write-Host ""
+
+$SelectedModels = @()
+$HasCustom = $false
+
+# Trigger search if -Search parameter was passed
+if (-not [string]::IsNullOrWhiteSpace($Search)) {
+    $searchModel = Invoke-HuggingFaceSearch -InitialQuery $Search
+    if ($searchModel) {
+        $SelectedModels += $searchModel
+    }
+}
 
 # Determine the user's model selection, either from command-line arguments or interactive prompt.
 if (-not [string]::IsNullOrWhiteSpace($Models)) {
     $UserChoice = $Models
     Write-Host "  Non-interactive mode: Using -Models $UserChoice" -ForegroundColor Cyan
     if ($CustomUrl) { Write-Host "  CustomUrl: $CustomUrl" -ForegroundColor Cyan }
+} elseif ($SelectedModels.Count -gt 0) {
+    # If -Search already added a model, prompt if they want to add more
+    $more = Read-Host "  Add more models by number, 's' for another search, or press Enter to proceed"
+    $UserChoice = if ($more) { $more } else { "done" }
 } else {
     $UserChoice = Read-Host "  Your choice"
 }
 # Default to the first model if the user provides no input.
-if ([string]::IsNullOrWhiteSpace($UserChoice)) {
+if ([string]::IsNullOrWhiteSpace($UserChoice) -and $SelectedModels.Count -eq 0) {
     Write-Host ""
     Write-Host "  No input! Defaulting to [1] NemoMix Unleashed (recommended)..." -ForegroundColor Yellow
     $UserChoice = "1"
@@ -610,34 +874,62 @@ if ([string]::IsNullOrWhiteSpace($UserChoice)) {
 # -----------------------------------------------------------------
 # Parse the user's selection
 # -----------------------------------------------------------------
-$SelectedModels = @()
-$HasCustom = $false
-
-# Handle the "all" keyword to select every model in the catalog.
-if ($UserChoice.Trim().ToLower() -eq "all") {
-    $SelectedModels = @($ModelCatalog)
-} else {
-    # Split the input by commas and process each token.
-    $tokens = $UserChoice -split ","
-    foreach ($token in $tokens) {
-        $t = $token.Trim().ToLower()
-        if ($t -eq "c" -or $t -eq "custom") {
-            $HasCustom = $true # Flag that a custom model needs to be configured
-        } elseif ($t -match '^\d+$') {
-            $num = [int]$t
-            # Find the corresponding model in the catalog.
-            $found = $ModelCatalog | Where-Object { $_.Num -eq $num }
-            if ($found) {
-                # Prevent duplicate selections.
-                $alreadyAdded = $SelectedModels | Where-Object { $_.Num -eq $num }
-                if (-Not $alreadyAdded) {
-                    $SelectedModels += $found
+if ($UserChoice -and $UserChoice.Trim().ToLower() -ne "done") {
+    # Check if user typed search query directly
+    if ($UserChoice -match '^(?i)(?:search:|s:)\s*(.+)$') {
+        $hfQuery = $Matches[1].Trim()
+        $searchModel = Invoke-HuggingFaceSearch -InitialQuery $hfQuery
+        if ($searchModel) { $SelectedModels += $searchModel }
+    } elseif ($UserChoice.Trim().ToLower() -eq "s" -or $UserChoice.Trim().ToLower() -eq "search") {
+        $searchModel = Invoke-HuggingFaceSearch
+        if ($searchModel) { $SelectedModels += $searchModel }
+    } elseif ($UserChoice.Trim().ToLower() -eq "all") {
+        foreach ($catM in $ModelCatalog) {
+            $mCopy = @{}
+            foreach ($k in $catM.Keys) { $mCopy[$k] = $catM[$k] }
+            $SelectedModels += $mCopy
+        }
+    } else {
+        # Split the input by commas and process each token.
+        $tokens = $UserChoice -split ","
+        foreach ($token in $tokens) {
+            $t = $token.Trim()
+            if ($t.ToLower() -eq "c" -or $t.ToLower() -eq "custom") {
+                $HasCustom = $true
+            } elseif ($t.ToLower() -eq "s" -or $t.ToLower() -eq "search") {
+                $searchModel = Invoke-HuggingFaceSearch
+                if ($searchModel) { $SelectedModels += $searchModel }
+            } elseif ($t -match '^(?i)(?:search:|s:)\s*(.+)$') {
+                $hfQuery = $Matches[1].Trim()
+                $searchModel = Invoke-HuggingFaceSearch -InitialQuery $hfQuery
+                if ($searchModel) { $SelectedModels += $searchModel }
+            } elseif ($t -match '^(\d+):([a-zA-Z0-9_]+)$') {
+                $num = [int]$Matches[1]
+                $tier = [string]$Matches[2]
+                $found = $ModelCatalog | Where-Object { $_.Num -eq $num }
+                if ($found) {
+                    $mCopy = @{}
+                    foreach ($k in $found.Keys) { $mCopy[$k] = $found[$k] }
+                    Set-ModelQuantizationTier -ModelObj $mCopy -Tier $tier
+                    $alreadyAdded = $SelectedModels | Where-Object { $_.Num -eq $num -and $_.File -eq $mCopy.File }
+                    if (-not $alreadyAdded) { $SelectedModels += $mCopy }
+                } else {
+                    Write-Host "  Invalid number '$num' - skipping" -ForegroundColor Red
+                }
+            } elseif ($t -match '^\d+$') {
+                $num = [int]$t
+                $found = $ModelCatalog | Where-Object { $_.Num -eq $num }
+                if ($found) {
+                    $mCopy = @{}
+                    foreach ($k in $found.Keys) { $mCopy[$k] = $found[$k] }
+                    $alreadyAdded = $SelectedModels | Where-Object { $_.Num -eq $num }
+                    if (-not $alreadyAdded) { $SelectedModels += $mCopy }
+                } else {
+                    Write-Host "  Invalid number '$num' - skipping (valid: 1-$($ModelCatalog.Count))" -ForegroundColor Red
                 }
             } else {
-                Write-Host "  Invalid number '$num' - skipping (valid: 1-$($ModelCatalog.Count))" -ForegroundColor Red
+                Write-Host "  Unrecognized input '$t' - skipping" -ForegroundColor Red
             }
-        } else {
-            Write-Host "  Unrecognized input '$t' - skipping" -ForegroundColor Red
         }
     }
 }
@@ -714,6 +1006,60 @@ if ($HasCustom) {
 
         $SelectedModels += $customModel
         Write-Host "  Custom model added!" -ForegroundColor Green
+    }
+}
+
+# -----------------------------------------------------------------
+# Quantization Tier Selector
+# -----------------------------------------------------------------
+if (-not [string]::IsNullOrWhiteSpace($Quant)) {
+    foreach ($m in $SelectedModels) {
+        if (-not $m.ActiveQuant) {
+            Set-ModelQuantizationTier -ModelObj $m -Tier $Quant
+        }
+    }
+} elseif (-not $Yes -and $SelectedModels.Count -gt 0) {
+    # Check if any selected model has multi-tier quantizations and none was explicitly set
+    $hasQuants = $false
+    foreach ($m in $SelectedModels) {
+        if ($m.Quantizations -and -not $m.ActiveQuant) { $hasQuants = $true; break }
+    }
+    if ($hasQuants) {
+        Write-Host ""
+        Write-Host "  ---- Quantization Tier Selector ----" -ForegroundColor Cyan
+        Write-Host "  Available tiers:" -ForegroundColor DarkGray
+        Write-Host "    [1] Q4_K_M  - Fast, standard memory footprint (Default)" -ForegroundColor White
+        Write-Host "    [2] Q5_K_M  - High accuracy / reasoning fidelity" -ForegroundColor White
+        Write-Host "    [3] Q8_0    - Maximum quality (16GB+ RAM)" -ForegroundColor White
+        Write-Host "    [4] Q2_K    - Ultra-compact for low-end systems (4GB RAM)" -ForegroundColor White
+        Write-Host ""
+        $qChoice = Read-Host "  Select tier for selected model(s) [1-4 or tier name] (Press Enter for catalog defaults)"
+        $chosenTier = ""
+        switch ($qChoice.Trim().ToLower()) {
+            "1" { $chosenTier = "Q4_K_M" }
+            "q4" { $chosenTier = "Q4_K_M" }
+            "q4_k_m" { $chosenTier = "Q4_K_M" }
+            "2" { $chosenTier = "Q5_K_M" }
+            "q5" { $chosenTier = "Q5_K_M" }
+            "q5_k_m" { $chosenTier = "Q5_K_M" }
+            "3" { $chosenTier = "Q8_0" }
+            "q8" { $chosenTier = "Q8_0" }
+            "q8_0" { $chosenTier = "Q8_0" }
+            "4" { $chosenTier = "Q2_K" }
+            "q2" { $chosenTier = "Q2_K" }
+            "q2_k" { $chosenTier = "Q2_K" }
+            default { if (-not [string]::IsNullOrWhiteSpace($qChoice)) { $chosenTier = $qChoice.Trim().ToUpper() } }
+        }
+        if ($chosenTier) {
+            foreach ($m in $SelectedModels) {
+                if (-not $m.ActiveQuant) {
+                    $changed = Set-ModelQuantizationTier -ModelObj $m -Tier $chosenTier
+                    if ($changed) {
+                        Write-Host "    $($m.Name) -> $chosenTier (~$($m.Size) GB)" -ForegroundColor Green
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -843,6 +1189,26 @@ foreach ($m in $SelectedModels) {
         Write-Host "      $($m.URL)" -ForegroundColor DarkGray
         Write-Host "      Place the file in: $USB_Drive\models\" -ForegroundColor DarkGray
     }
+
+    # Automatically download matching CLIP projector (mmproj) for Vision models
+    if ($m.Mmproj -and $m.Mmproj.file -and $m.Mmproj.url) {
+        $mmDest = "$USB_Drive\models\$($m.Mmproj.file)"
+        $mmMin = if ($m.Mmproj.min_bytes) { [long]$m.Mmproj.min_bytes } else { 100000000 }
+        $mmSize = if ($m.Mmproj.size_gb) { "(~$($m.Mmproj.size_gb) GB)" } else { "" }
+        Write-Host "      Vision CLIP Projector: $($m.Mmproj.file) $mmSize" -ForegroundColor Cyan
+        if (Test-DownloadedFile -Path $mmDest -MinSize $mmMin) {
+            Write-Host "      Vision projector already downloaded! Skipping..." -ForegroundColor Green
+        } else {
+            $mmSha = if ($m.Mmproj.sha256) { $m.Mmproj.sha256 } else { "" }
+            $mmOk = Invoke-SafeDownload -Url $m.Mmproj.url -Dest $mmDest -MinSize $mmMin -Name "$($m.Name) (CLIP Projector)" -ExpectedSHA256 $mmSha
+            if ($mmOk) {
+                Write-Host "      Vision projector downloaded successfully!" -ForegroundColor Green
+            } else {
+                $downloadErrors += "$($m.Name) (CLIP Projector)"
+                Write-Host "      ERROR: Vision projector download failed for $($m.Name)!" -ForegroundColor Red
+            }
+        }
+    }
 }
 
 # =================================================================
@@ -851,30 +1217,45 @@ foreach ($m in $SelectedModels) {
 Write-Host ""
 Write-Host "[4/6] Creating AI model configurations..." -ForegroundColor Yellow
 
-# Generate a Modelfile for each selected model to configure its parameters and system prompt.
+# Generate a Modelfile for each selected model (including mmproj links for vision models).
 foreach ($m in $SelectedModels) {
     $modelfilePath = "$USB_Drive\models\Modelfile-$($m.Local)"
-    # Define the Modelfile content using a here-string.
-    $modelfileContent = @"
-FROM ./$($m.File)
-PARAMETER temperature 0.7
-PARAMETER top_p 0.9
-SYSTEM """$($m.Prompt)"""
-"@
-    # Write the configuration to disk (BOM-free so Ollama/llama.cpp parse it).
-    Write-TextFile -Path $modelfilePath -Lines @($modelfileContent)
+    $mType = if ($m.ContainsKey('Type') -and $m.Type) { $m.Type } else { "llm" }
+
+    $lines = @("FROM ./$($m.File)")
+    if ($m.Mmproj -and $m.Mmproj.file) {
+        $lines += "FROM ./$($m.Mmproj.file)"
+    }
+    if ($mType -eq "embedding" -or $mType -eq "reranker") {
+        # Embeddings & rerankers require only the weights mapping
+    } else {
+        $lines += "PARAMETER temperature 0.7"
+        $lines += "PARAMETER top_p 0.9"
+        if ($m.Prompt) {
+            $lines += "SYSTEM `"`"`"$($m.Prompt)`"`"`""
+        }
+    }
+
+    Write-TextFile -Path $modelfilePath -Lines $lines
     Write-Host "      Config: $($m.Name) -> $($m.Local)" -ForegroundColor Green
 }
 
-# Create a default/legacy Modelfile using the first selected model for backwards compatibility.
-$firstModel = $SelectedModels[0]
-$legacyModelfile = @"
-FROM ./$($firstModel.File)
-PARAMETER temperature 0.7
-PARAMETER top_p 0.9
-SYSTEM """$($firstModel.Prompt)"""
-"@
-Write-TextFile -Path "$USB_Drive\models\Modelfile" -Lines @($legacyModelfile)
+# Create a default/legacy Modelfile using the first conversational/vision model.
+$firstChatModel = $SelectedModels | Where-Object { -not $_.Type -or $_.Type -in @("llm", "vision") } | Select-Object -First 1
+if (-not $firstChatModel) { $firstChatModel = $SelectedModels[0] }
+
+$legacyLines = @("FROM ./$($firstChatModel.File)")
+if ($firstChatModel.Mmproj -and $firstChatModel.Mmproj.file) {
+    $legacyLines += "FROM ./$($firstChatModel.Mmproj.file)"
+}
+if ($firstChatModel.Type -ne "embedding" -and $firstChatModel.Type -ne "reranker") {
+    $legacyLines += "PARAMETER temperature 0.7"
+    $legacyLines += "PARAMETER top_p 0.9"
+    if ($firstChatModel.Prompt) {
+        $legacyLines += "SYSTEM `"`"`"$($firstChatModel.Prompt)`"`"`""
+    }
+}
+Write-TextFile -Path "$USB_Drive\models\Modelfile" -Lines $legacyLines
 
 # Save a list of installed models to a text file for tracking.
 $installedList = @($SelectedModels | ForEach-Object { "$($_.Local)|$($_.Name)|$($_.Label)" })
@@ -1107,7 +1488,19 @@ Write-Host "Configuring AnythingLLM to use your models..." -ForegroundColor Yell
 $storageDir = "$USB_Drive\anythingllm_data\storage"
 New-Item -ItemType Directory -Force -Path $storageDir | Out-Null
 
-$firstModelLocal = $SelectedModels[0].Local
+$firstChatModel = $SelectedModels | Where-Object { -not $_.Type -or $_.Type -in @("llm", "vision") } | Select-Object -First 1
+if (-not $firstChatModel) { $firstChatModel = $SelectedModels[0] }
+$firstModelLocal = $firstChatModel.Local
+
+$firstEmbedModel = $SelectedModels | Where-Object { $_.Type -eq "embedding" -or $_.Label -eq "EMBEDDING" -or $_.Local -match "embed|bge" } | Select-Object -First 1
+$embedLocal = if ($EmbeddingModel) {
+    $EmbeddingModel
+} elseif ($firstEmbedModel) {
+    $firstEmbedModel.Local
+} else {
+    "nomic-embed-local"
+}
+
 $envFilePath = "$storageDir\.env"
 
 if ($ActiveEngine -eq "llamacpp") {
@@ -1124,7 +1517,7 @@ if ($ActiveEngine -eq "llamacpp") {
     $kept = @()
     if (Test-Path -LiteralPath $envFilePath) {
         $kept = @(Get-Content -LiteralPath $envFilePath | Where-Object {
-            $_ -notmatch '^(LLM_PROVIDER|OLLAMA_BASE_PATH|OLLAMA_MODEL_PREF|OLLAMA_MODEL_TOKEN_LIMIT|GENERIC_OPEN_AI_BASE_PATH|GENERIC_OPEN_AI_MODEL_PREF|GENERIC_OPEN_AI_MODEL_TOKEN_LIMIT|GENERIC_OPEN_AI_MAX_TOKENS|GENERIC_OPEN_AI_API_KEY|EMBEDDING_ENGINE|VECTOR_DB)='
+            $_ -notmatch '^(LLM_PROVIDER|OLLAMA_BASE_PATH|OLLAMA_MODEL_PREF|OLLAMA_MODEL_TOKEN_LIMIT|GENERIC_OPEN_AI_BASE_PATH|GENERIC_OPEN_AI_MODEL_PREF|GENERIC_OPEN_AI_MODEL_TOKEN_LIMIT|GENERIC_OPEN_AI_MAX_TOKENS|GENERIC_OPEN_AI_API_KEY|EMBEDDING_ENGINE|EMBEDDING_BASE_PATH|EMBEDDING_MODEL_PREF|EMBEDDING_MODEL_MAX_CHUNK_LENGTH|VECTOR_DB)='
         })
     }
 
@@ -1141,13 +1534,16 @@ if ($ActiveEngine -eq "llamacpp") {
     Write-Host "      AnythingLLM configured for llama.cpp (generic-openai @ port $llamaPort)" -ForegroundColor Green
     Write-Host "      Default model: $firstModelLocal (token_limit=$token)" -ForegroundColor DarkGray
 } else {
-    # Define the default environment variables to connect AnythingLLM to the local Ollama instance.
+    # Define the default environment variables to connect AnythingLLM to the local Ollama instance + local embeddings.
     $envContent = @"
 LLM_PROVIDER=ollama
 OLLAMA_BASE_PATH=http://127.0.0.1:11434
 OLLAMA_MODEL_PREF=$firstModelLocal
 OLLAMA_MODEL_TOKEN_LIMIT=4096
-EMBEDDING_ENGINE=native
+EMBEDDING_ENGINE=ollama
+EMBEDDING_BASE_PATH=http://127.0.0.1:11434
+EMBEDDING_MODEL_PREF=$embedLocal
+EMBEDDING_MODEL_MAX_CHUNK_LENGTH=8192
 VECTOR_DB=lancedb
 "@
 
@@ -1155,13 +1551,12 @@ VECTOR_DB=lancedb
     if (-Not (Test-Path $envFilePath)) {
         Write-TextFile -Path $envFilePath -Lines @($envContent)
         Write-Host "      AnythingLLM configured to use: $firstModelLocal" -ForegroundColor Green
+        Write-Host "      Local RAG embedding endpoint: Ollama @ $embedLocal" -ForegroundColor Green
     } else {
         # If the file exists, check if it's already configured for Ollama to preserve user settings.
         $existing = Get-Content $envFilePath -Raw -ErrorAction SilentlyContinue
         if ($existing -match 'LLM_PROVIDER=ollama') {
             Write-Host "      AnythingLLM already configured for Ollama — preserving user settings." -ForegroundColor Green
-            # Non-destructive patch: only add missing keys, never overwrite token limit
-            # Perform non-destructive patching: only add missing keys without overwriting existing custom values.
             $needsPatch = $false
             if ($existing -notmatch 'OLLAMA_MODEL_PREF=') {
                 Add-Content -Path $envFilePath -Value "OLLAMA_MODEL_PREF=$firstModelLocal" -Encoding UTF8
@@ -1171,7 +1566,14 @@ VECTOR_DB=lancedb
                 Add-Content -Path $envFilePath -Value "OLLAMA_MODEL_TOKEN_LIMIT=4096" -Encoding UTF8
                 $needsPatch = $true
             }
-            # If existing has token limit, leave it untouched (preservation fix)
+            if ($existing -match 'EMBEDDING_ENGINE=native') {
+                $existing = $existing -replace 'EMBEDDING_ENGINE=native', "EMBEDDING_ENGINE=ollama`r`nEMBEDDING_BASE_PATH=http://127.0.0.1:11434`r`nEMBEDDING_MODEL_PREF=$embedLocal`r`nEMBEDDING_MODEL_MAX_CHUNK_LENGTH=8192"
+                Write-TextFile -Path $envFilePath -Lines @($existing)
+                $needsPatch = $true
+            } elseif ($existing -notmatch 'EMBEDDING_ENGINE=') {
+                Add-Content -Path $envFilePath -Value "EMBEDDING_ENGINE=ollama`r`nEMBEDDING_BASE_PATH=http://127.0.0.1:11434`r`nEMBEDDING_MODEL_PREF=$embedLocal`r`nEMBEDDING_MODEL_MAX_CHUNK_LENGTH=8192" -Encoding UTF8
+                $needsPatch = $true
+            }
             # Log if a custom token limit was preserved.
             $tokMatch = [regex]::Match($existing, 'OLLAMA_MODEL_TOKEN_LIMIT=(\d+)')
             if ($tokMatch.Success) {
@@ -1180,25 +1582,28 @@ VECTOR_DB=lancedb
             if (-not $needsPatch) { Write-Host "      No patch needed." -ForegroundColor DarkGray }
         } else {
             # Preserve custom token limit even when migrating from anythingllm_ollama
-            # If migrating from an older configuration, preserve the custom token limit if it exists.
             $tok = 4096
             $m = [regex]::Match($existing, 'OLLAMA_MODEL_TOKEN_LIMIT=(\d+)')
             if ($m.Success) { try { $tok = [int]$m.Groups[1].Value } catch {} }
-            # Generate the migrated content.
             $migratedContent = @"
 LLM_PROVIDER=ollama
 OLLAMA_BASE_PATH=http://127.0.0.1:11434
 OLLAMA_MODEL_PREF=$firstModelLocal
 OLLAMA_MODEL_TOKEN_LIMIT=$tok
-EMBEDDING_ENGINE=native
+EMBEDDING_ENGINE=ollama
+EMBEDDING_BASE_PATH=http://127.0.0.1:11434
+EMBEDDING_MODEL_PREF=$embedLocal
+EMBEDDING_MODEL_MAX_CHUNK_LENGTH=8192
 VECTOR_DB=lancedb
 "@
             Write-TextFile -Path $envFilePath -Lines @($migratedContent)
             Write-Host "      AnythingLLM reconfigured to use external Ollama (preserved token_limit=$tok)." -ForegroundColor Green
+            Write-Host "      Local RAG embedding endpoint: Ollama @ $embedLocal" -ForegroundColor Green
         }
     }
 
     Write-Host "      Default model: $firstModelLocal" -ForegroundColor DarkGray
+    Write-Host "      Embedding model for RAG: $embedLocal" -ForegroundColor DarkGray
 }
 
 # =================================================================

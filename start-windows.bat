@@ -336,6 +336,25 @@ if not defined MODEL_FILE (
 set "MODEL_PATH="
 if defined MODEL_FILE if exist "%~dp0models\!MODEL_FILE!" set "MODEL_PATH=%~dp0models\!MODEL_FILE!"
 
+set "MMPROJ_FILE="
+if exist "%~dp0models\Modelfile-%MODEL_NAME%" (
+    for /f "usebackq tokens=1,*" %%a in ("%~dp0models\Modelfile-%MODEL_NAME%") do (
+        if /I "%%a"=="FROM" (
+            set "FROM_LINE=%%b"
+            if not "!FROM_LINE:mmproj=!"=="!FROM_LINE!" (
+                set "MMPROJ_FILE=!FROM_LINE!"
+            )
+        )
+    )
+)
+if defined MMPROJ_FILE set "MMPROJ_FILE=!MMPROJ_FILE:./=!"
+if defined MMPROJ_FILE set "MMPROJ_FILE=!MMPROJ_FILE:.\=!"
+set "MMPROJ_PATH="
+if defined MMPROJ_FILE if exist "%~dp0models\!MMPROJ_FILE!" (
+    set "MMPROJ_PATH=%~dp0models\!MMPROJ_FILE!"
+    echo [+] Vision projector found: !MMPROJ_FILE!
+)
+
 if /I "%CFG_ENGINE%"=="llamacpp" (
     if not defined MODEL_PATH (
         echo.
@@ -419,7 +438,7 @@ echo [%date% %time%] HW %HW_ACCEL% %HW_GPU_NAME% ngl=%HW_NGL% threads=%HW_THREAD
 echo.
 echo Starting %ENGINE_LABEL% on %BIND_HOST%:%ENGINE_PORT%...
 set "ENGINE_PID="
-for /f "usebackq tokens=*" %%p in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%TOOLS%\start-engine.ps1" -Engine %CFG_ENGINE% -UsbRoot "%USB_ARG%" -ModelPath "%MODEL_PATH%" -ModelAlias "%MODEL_NAME%" -Port %ENGINE_PORT% -BindHost %BIND_HOST% -Ngl %HW_NGL% -Ctx %HW_CTX% -Threads %HW_THREADS% -ExtraArgs "%CFG_LLAMACPP_EXTRA_ARGS%" -KeepAlive "%CFG_OLLAMA_KEEP_ALIVE%" -NumParallel %CFG_OLLAMA_NUM_PARALLEL% -LogFile "%LOG_DIR%\engine-%LOG_TS%.log"`) do set "ENGINE_PID=%%p"
+for /f "usebackq tokens=*" %%p in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%TOOLS%\start-engine.ps1" -Engine %CFG_ENGINE% -UsbRoot "%USB_ARG%" -ModelPath "%MODEL_PATH%" -ModelAlias "%MODEL_NAME%" -MmprojPath "!MMPROJ_PATH!" -Port %ENGINE_PORT% -BindHost %BIND_HOST% -Ngl %HW_NGL% -Ctx %HW_CTX% -Threads %HW_THREADS% -ExtraArgs "%CFG_LLAMACPP_EXTRA_ARGS%" -KeepAlive "%CFG_OLLAMA_KEEP_ALIVE%" -NumParallel %CFG_OLLAMA_NUM_PARALLEL% -LogFile "%LOG_DIR%\engine-%LOG_TS%.log"`) do set "ENGINE_PID=%%p"
 
 if not defined ENGINE_PID (
     echo [ERROR] Could not start the engine. See:

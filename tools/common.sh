@@ -156,7 +156,18 @@ px_resolve_model() {
         PX_MODEL_PATH=""
         PX_MODEL_GB="0"
     fi
-    export PX_MODEL_LOCAL PX_MODEL_FILE PX_MODEL_PATH PX_MODEL_GB
+
+    PX_MMPROJ_FILE=""
+    PX_MMPROJ_PATH=""
+    if [[ -n "$local_name" && -f "$models_dir/Modelfile-$local_name" ]]; then
+        local mm_cand
+        mm_cand=$(awk 'tolower($1)=="from" { gsub(/^\.\//,"",$2); if ($2 ~ /mmproj/) { print $2; exit } }' "$models_dir/Modelfile-$local_name" 2>/dev/null | tr -d '\r')
+        if [[ -n "$mm_cand" && -f "$models_dir/$mm_cand" ]]; then
+            PX_MMPROJ_FILE="$mm_cand"
+            PX_MMPROJ_PATH="$models_dir/$mm_cand"
+        fi
+    fi
+    export PX_MODEL_LOCAL PX_MODEL_FILE PX_MODEL_PATH PX_MODEL_GB PX_MMPROJ_FILE PX_MMPROJ_PATH
 }
 
 # ── Port helpers ─────────────────────────────────────────────────
@@ -193,6 +204,7 @@ px_config_anythingllm() {
     local host="$3"
     local port="$4"
     local model="$5"
+    local emb_model="${6:-}"
     local storage="$usb/anythingllm_data/storage"
     local env_file="$storage/.env"
     mkdir -p "$storage" 2>/dev/null || true
@@ -204,9 +216,25 @@ px_config_anythingllm() {
         [[ "$existing" =~ ^[0-9]+$ ]] && token="$existing"
     fi
 
+    # Resolve embedding model preference for local RAG
+    if [[ -z "$emb_model" ]]; then
+        local installed_file="$usb/models/installed-models.txt"
+        if [[ -f "$installed_file" ]]; then
+            while IFS='|' read -r m_local m_name m_label _; do
+                m_local=$(echo "$m_local" | tr -d '\r\n ')
+                m_label=$(echo "$m_label" | tr -d '\r\n ')
+                if [[ "$m_label" == "EMBEDDING" || "$m_local" =~ (embed|bge) ]]; then
+                    emb_model="$m_local"
+                    break
+                fi
+            done < "$installed_file"
+        fi
+    fi
+    [[ -z "$emb_model" ]] && emb_model="${EMBEDDING_MODEL:-nomic-embed-local}"
+
     local tmp="${env_file}.tmp"
     if [[ -f "$env_file" ]]; then
-        grep -vE '^(LLM_PROVIDER|OLLAMA_BASE_PATH|OLLAMA_MODEL_PREF|OLLAMA_MODEL_TOKEN_LIMIT|GENERIC_OPEN_AI_BASE_PATH|GENERIC_OPEN_AI_MODEL_PREF|GENERIC_OPEN_AI_MODEL_TOKEN_LIMIT|GENERIC_OPEN_AI_API_KEY|GENERIC_OPEN_AI_MAX_TOKENS|EMBEDDING_ENGINE|VECTOR_DB|HOST|SERVER_PORT)=' "$env_file" > "$tmp" 2>/dev/null || true
+        grep -vE '^(LLM_PROVIDER|OLLAMA_BASE_PATH|OLLAMA_MODEL_PREF|OLLAMA_MODEL_TOKEN_LIMIT|GENERIC_OPEN_AI_BASE_PATH|GENERIC_OPEN_AI_MODEL_PREF|GENERIC_OPEN_AI_MODEL_TOKEN_LIMIT|GENERIC_OPEN_AI_API_KEY|GENERIC_OPEN_AI_MAX_TOKENS|EMBEDDING_ENGINE|EMBEDDING_BASE_PATH|EMBEDDING_MODEL_PREF|EMBEDDING_MODEL_MAX_CHUNK_LENGTH|VECTOR_DB|HOST|SERVER_PORT)=' "$env_file" > "$tmp" 2>/dev/null || true
     else
         : > "$tmp"
     fi
@@ -219,14 +247,19 @@ px_config_anythingllm() {
             echo "GENERIC_OPEN_AI_MODEL_TOKEN_LIMIT=${token}"
             echo "GENERIC_OPEN_AI_MAX_TOKENS=${token}"
             echo "GENERIC_OPEN_AI_API_KEY=sk-no-key"
+            echo "EMBEDDING_ENGINE=native"
+            echo "VECTOR_DB=lancedb"
         else
             echo "LLM_PROVIDER=ollama"
             echo "OLLAMA_BASE_PATH=http://127.0.0.1:${port}"
             echo "OLLAMA_MODEL_PREF=${model}"
             echo "OLLAMA_MODEL_TOKEN_LIMIT=${token}"
+            echo "EMBEDDING_ENGINE=ollama"
+            echo "EMBEDDING_BASE_PATH=http://127.0.0.1:${port}"
+            echo "EMBEDDING_MODEL_PREF=${emb_model}"
+            echo "EMBEDDING_MODEL_MAX_CHUNK_LENGTH=8192"
+            echo "VECTOR_DB=lancedb"
         fi
-        echo "EMBEDDING_ENGINE=native"
-        echo "VECTOR_DB=lancedb"
         # LAN mode: desktop builds ignore these, but server builds honour them.
         if [[ "${SERVER_MODE:-0}" == "1" ]]; then
             echo "HOST=0.0.0.0"

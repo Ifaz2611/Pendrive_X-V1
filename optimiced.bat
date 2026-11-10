@@ -173,7 +173,10 @@ for /f "delims=0123456789" %%x in ("%TOKEN_LIMIT%") do set "TOKEN_LIMIT=4096"
     echo OLLAMA_BASE_PATH=http://%OLLAMA_HOST%
     echo OLLAMA_MODEL_PREF=%DEFAULT_MODEL%
     echo OLLAMA_MODEL_TOKEN_LIMIT=%TOKEN_LIMIT%
-    echo EMBEDDING_ENGINE=native
+    echo EMBEDDING_ENGINE=ollama
+    echo EMBEDDING_BASE_PATH=http://%OLLAMA_HOST%
+    echo EMBEDDING_MODEL_PREF=nomic-embed-local
+    echo EMBEDDING_MODEL_MAX_CHUNK_LENGTH=8192
     echo VECTOR_DB=lancedb
 ) > "%ENV_FILE%"
 

@@ -13,6 +13,7 @@ param(
     [string]$UsbRoot = "",
     [string]$ModelPath = "",
     [string]$ModelAlias = "local",
+    [string]$MmprojPath = "",
     [int]$Port = 11434,
     [string]$BindHost = "127.0.0.1",
     [int]$Ngl = 0,
@@ -95,6 +96,20 @@ if ($Engine -eq "ollama") {
         "-t", "$Threads",
         "--alias", (Format-Argument $ModelAlias)
     )
+    if (-not $MmprojPath -and $ModelPath) {
+        $modelDir = Split-Path -Parent $ModelPath
+        $mf = Join-Path $modelDir "Modelfile-$ModelAlias"
+        if (Test-Path -LiteralPath $mf) {
+            $froms = @(Get-Content -LiteralPath $mf | Where-Object { $_ -match '^\s*FROM\s+(.+)$' } | ForEach-Object { $Matches[1].Trim() -replace '^\./','' -replace '^.\\','' })
+            if ($froms.Count -gt 1) {
+                $cand = Join-Path $modelDir $froms[1]
+                if (Test-Path -LiteralPath $cand) { $MmprojPath = $cand }
+            }
+        }
+    }
+    if ($MmprojPath -and (Test-Path -LiteralPath $MmprojPath)) {
+        $arguments += @("--mmproj", (Format-Argument $MmprojPath))
+    }
     if (-not [string]::IsNullOrWhiteSpace($ExtraArgs)) {
         foreach ($extra in (Split-Arguments $ExtraArgs)) { $arguments += $extra }
     }
